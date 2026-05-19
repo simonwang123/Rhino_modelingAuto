@@ -9,4 +9,7 @@ DEFAULT_DAM_PARAMETERS = DamParameters(
     axis_length=300.0,
     foundation_elevation=100.0,
     crest_elevation=180.0,
+    bench_count=3,
+    bench_elevations=(160.0, 140.0, 120.0),
+    bench_width=5.0,
 )

@@ -12,12 +12,12 @@ class DamGeometry:
     profile_curve: Any
     body_brep: Any
     upstream_slope_surface: Any
-    downstream_slope_surface: Any
+    downstream_surfaces: tuple[Any, ...]
     crest_platform_surface: Any
 
 
 class DamGeometryBuilder:
-    """Builds Rhino geometry for a homogeneous trapezoidal earth-rock dam."""
+    """Builds Rhino geometry for a dam profile extruded along the dam axis."""
 
     def __init__(self, parameters: DamParameters) -> None:
         self.parameters = parameters
@@ -30,27 +30,11 @@ class DamGeometryBuilder:
 
     def build_body_brep(self) -> Any:
         Rhino = _require_rhino()
-        p = self.profile
-        y0 = 0.0
-        y1 = self.parameters.axis_length
         tolerance = _model_tolerance(Rhino)
-
-        u0 = Rhino.Geometry.Point3d(p.upstream_toe.x, y0, p.upstream_toe.z)
-        uc0 = Rhino.Geometry.Point3d(p.upstream_crest.x, y0, p.upstream_crest.z)
-        dc0 = Rhino.Geometry.Point3d(p.downstream_crest.x, y0, p.downstream_crest.z)
-        d0 = Rhino.Geometry.Point3d(p.downstream_toe.x, y0, p.downstream_toe.z)
-        u1 = Rhino.Geometry.Point3d(p.upstream_toe.x, y1, p.upstream_toe.z)
-        uc1 = Rhino.Geometry.Point3d(p.upstream_crest.x, y1, p.upstream_crest.z)
-        dc1 = Rhino.Geometry.Point3d(p.downstream_crest.x, y1, p.downstream_crest.z)
-        d1 = Rhino.Geometry.Point3d(p.downstream_toe.x, y1, p.downstream_toe.z)
-
+        section_points = self.profile.points()
         faces = [
-            Rhino.Geometry.Brep.CreateFromCornerPoints(u0, uc0, dc0, d0, tolerance),
-            Rhino.Geometry.Brep.CreateFromCornerPoints(u1, d1, dc1, uc1, tolerance),
-            Rhino.Geometry.Brep.CreateFromCornerPoints(u0, u1, uc1, uc0, tolerance),
-            Rhino.Geometry.Brep.CreateFromCornerPoints(dc0, dc1, d1, d0, tolerance),
-            Rhino.Geometry.Brep.CreateFromCornerPoints(uc0, uc1, dc1, dc0, tolerance),
-            Rhino.Geometry.Brep.CreateFromCornerPoints(u0, d0, d1, u1, tolerance),
+            *self._build_planar_caps(Rhino, section_points, tolerance),
+            *self._build_side_faces(Rhino, section_points, tolerance),
         ]
         if any(face is None or not face.IsValid for face in faces):
             raise RuntimeError("Failed to create one or more dam body faces.")
@@ -67,11 +51,14 @@ class DamGeometryBuilder:
 
         return body
 
-    def build_surfaces(self) -> tuple[Any, Any, Any]:
+    def build_surfaces(self) -> tuple[Any, tuple[Any, ...], Any]:
         Rhino = _require_rhino()
         p = self.profile
         upstream = self._build_quad_surface(Rhino, p.upstream_toe, p.upstream_crest)
-        downstream = self._build_quad_surface(Rhino, p.downstream_crest, p.downstream_toe)
+        downstream = tuple(
+            self._build_quad_surface(Rhino, start, end)
+            for start, end in _adjacent_pairs(p.downstream_boundary_points())
+        )
         crest = self._build_quad_surface(Rhino, p.upstream_crest, p.downstream_crest)
         return upstream, downstream, crest
 
@@ -81,7 +68,7 @@ class DamGeometryBuilder:
             profile_curve=self.build_profile_curve(),
             body_brep=self.build_body_brep(),
             upstream_slope_surface=upstream,
-            downstream_slope_surface=downstream,
+            downstream_surfaces=downstream,
             crest_platform_surface=crest,
         )
 
@@ -97,15 +84,67 @@ class DamGeometryBuilder:
             "profile_curve": doc.Objects.AddCurve(geometry.profile_curve),
             "body_brep": doc.Objects.AddBrep(geometry.body_brep),
             "upstream_slope_surface": doc.Objects.AddBrep(geometry.upstream_slope_surface),
-            "downstream_slope_surface": doc.Objects.AddBrep(geometry.downstream_slope_surface),
             "crest_platform_surface": doc.Objects.AddBrep(geometry.crest_platform_surface),
         }
+        for index, downstream_surface in enumerate(geometry.downstream_surfaces):
+            object_ids[f"downstream_surface_{index}"] = doc.Objects.AddBrep(
+                downstream_surface
+            )
         doc.Views.Redraw()
         return object_ids
 
-    def _build_quad_surface(self, Rhino: Any, start: ProfilePoint, end: ProfilePoint) -> Any:
+    def _build_planar_caps(
+        self,
+        Rhino: Any,
+        section_points: tuple[ProfilePoint, ...],
+        tolerance: float,
+    ) -> tuple[Any, Any]:
+        front_curve = self._build_profile_curve_at_y(Rhino, section_points, 0.0)
+        back_curve = self._build_profile_curve_at_y(
+            Rhino,
+            tuple(reversed(section_points)),
+            self.parameters.axis_length,
+        )
+        front_caps = Rhino.Geometry.Brep.CreatePlanarBreps(front_curve, tolerance)
+        back_caps = Rhino.Geometry.Brep.CreatePlanarBreps(back_curve, tolerance)
+        if not front_caps or not back_caps:
+            raise RuntimeError("Failed to create dam body planar cap faces.")
+        return front_caps[0], back_caps[0]
+
+    def _build_side_faces(
+        self,
+        Rhino: Any,
+        section_points: tuple[ProfilePoint, ...],
+        tolerance: float,
+    ) -> tuple[Any, ...]:
+        return tuple(
+            self._build_quad_surface(Rhino, start, end, tolerance)
+            for start, end in _closed_adjacent_pairs(section_points)
+        )
+
+    def _build_profile_curve_at_y(
+        self,
+        Rhino: Any,
+        section_points: tuple[ProfilePoint, ...],
+        y: float,
+    ) -> Any:
+        points = [
+            Rhino.Geometry.Point3d(point.x, y, point.z)
+            for point in (*section_points, section_points[0])
+        ]
+        return Rhino.Geometry.PolylineCurve(points)
+
+    def _build_quad_surface(
+        self,
+        Rhino: Any,
+        start: ProfilePoint,
+        end: ProfilePoint,
+        tolerance: float | None = None,
+    ) -> Any:
         y0 = 0.0
         y1 = self.parameters.axis_length
+        if tolerance is None:
+            tolerance = _model_tolerance(Rhino)
         corners = [
             Rhino.Geometry.Point3d(start.x, y0, start.z),
             Rhino.Geometry.Point3d(end.x, y0, end.z),
@@ -117,7 +156,7 @@ class DamGeometryBuilder:
             corners[1],
             corners[2],
             corners[3],
-            _model_tolerance(Rhino),
+            tolerance,
         )
         if brep is None or not brep.IsValid:
             raise RuntimeError("Failed to create a valid quad surface Brep.")
@@ -133,6 +172,16 @@ def _model_tolerance(Rhino: Any) -> float:
     if active_doc is None:
         return 0.001
     return active_doc.ModelAbsoluteTolerance
+
+
+def _adjacent_pairs(points: tuple[ProfilePoint, ...]) -> tuple[tuple[ProfilePoint, ProfilePoint], ...]:
+    return tuple(zip(points, points[1:]))
+
+
+def _closed_adjacent_pairs(
+    points: tuple[ProfilePoint, ...],
+) -> tuple[tuple[ProfilePoint, ProfilePoint], ...]:
+    return tuple(zip(points, (*points[1:], points[0])))
 
 
 def _require_rhino() -> Any:

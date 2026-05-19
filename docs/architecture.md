@@ -5,9 +5,10 @@
 This project provides the first link in an automated earth-rock dam design
 pipeline: design parameters are converted into Rhino geometry.
 
-The first implementation targets a homogeneous trapezoidal dam body. It is not
-yet a detailed engineering model with core walls, filters, drains, staged
-construction, meshing, or numerical simulation.
+The first implementation targets the outer geometry of an earth-rock dam body.
+It supports downstream benches for concrete face rockfill dam layout studies,
+but it is not yet a detailed engineering model with face slabs, toe slabs,
+filters, drains, staged construction, meshing, or numerical simulation.
 
 ## Coordinate Convention
 
@@ -16,7 +17,9 @@ construction, meshing, or numerical simulation.
 - `Z`: elevation
 
 The 2D dam profile is calculated in the `X-Z` plane and the 3D body extends
-from `Y=0` to `Y=axis_length`.
+from `Y=0` to `Y=axis_length`. Downstream benches are modeled as horizontal
+segments on the downstream profile; each sloped segment keeps the configured
+downstream slope ratio.
 
 ## Module Responsibilities
 
