@@ -12,4 +12,10 @@ DEFAULT_DAM_PARAMETERS = DamParameters(
     bench_count=3,
     bench_elevations=(160.0, 140.0, 120.0),
     bench_width=5.0,
+    secondary_rockfill_points=(
+        (45.0, 150.0),
+        (70.0, 150.0),
+        (160.0, 110.0),
+        (120.0, 110.0),
+    ),
 )

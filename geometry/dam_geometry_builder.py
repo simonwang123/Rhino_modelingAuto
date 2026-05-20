@@ -11,6 +11,9 @@ from models import DamParameters
 class DamGeometry:
     profile_curve: Any
     body_brep: Any
+    primary_rockfill_brep: Any
+    secondary_rockfill_brep: Any | None
+    secondary_rockfill_profile_curve: Any | None
     upstream_slope_surface: Any
     downstream_surfaces: tuple[Any, ...]
     crest_platform_surface: Any
@@ -30,8 +33,57 @@ class DamGeometryBuilder:
 
     def build_body_brep(self) -> Any:
         Rhino = _require_rhino()
+        return self._build_section_brep(Rhino, self.profile.points())
+
+    def build_secondary_rockfill_profile_curve(self) -> Any | None:
+        Rhino = _require_rhino()
+        if self.profile.secondary_rockfill_zone is None:
+            return None
+        points = [
+            _to_point3d(Rhino, point)
+            for point in self.profile.secondary_rockfill_zone.closed_points()
+        ]
+        return Rhino.Geometry.PolylineCurve(points)
+
+    def build_secondary_rockfill_brep(self) -> Any | None:
+        Rhino = _require_rhino()
+        if self.profile.secondary_rockfill_zone is None:
+            return None
+        return self._build_section_brep(Rhino, self.profile.secondary_rockfill_zone.points)
+
+    def build_primary_rockfill_brep(self, body_brep: Any, secondary_brep: Any | None) -> Any:
+        if secondary_brep is None:
+            return body_brep
+
+        Rhino = _require_rhino()
         tolerance = _model_tolerance(Rhino)
-        section_points = self.profile.points()
+        body = body_brep.DuplicateBrep() if hasattr(body_brep, "DuplicateBrep") else body_brep
+        secondary = (
+            secondary_brep.DuplicateBrep()
+            if hasattr(secondary_brep, "DuplicateBrep")
+            else secondary_brep
+        )
+        difference = Rhino.Geometry.Brep.CreateBooleanDifference(
+            [body],
+            [secondary],
+            tolerance,
+        )
+        if not difference:
+            raise RuntimeError(
+                "Failed to create primary rockfill Brep with Rhino boolean difference."
+            )
+
+        primary = difference[0]
+        if primary is None or not primary.IsValid:
+            raise RuntimeError("Primary rockfill Brep from boolean difference is invalid.")
+        return primary
+
+    def _build_section_brep(
+        self,
+        Rhino: Any,
+        section_points: tuple[ProfilePoint, ...],
+    ) -> Any:
+        tolerance = _model_tolerance(Rhino)
         faces = [
             *self._build_planar_caps(Rhino, section_points, tolerance),
             *self._build_side_faces(Rhino, section_points, tolerance),
@@ -64,9 +116,15 @@ class DamGeometryBuilder:
 
     def build(self) -> DamGeometry:
         upstream, downstream, crest = self.build_surfaces()
+        body = self.build_body_brep()
+        secondary = self.build_secondary_rockfill_brep()
+        primary = self.build_primary_rockfill_brep(body, secondary)
         return DamGeometry(
             profile_curve=self.build_profile_curve(),
-            body_brep=self.build_body_brep(),
+            body_brep=body,
+            primary_rockfill_brep=primary,
+            secondary_rockfill_brep=secondary,
+            secondary_rockfill_profile_curve=self.build_secondary_rockfill_profile_curve(),
             upstream_slope_surface=upstream,
             downstream_surfaces=downstream,
             crest_platform_surface=crest,
@@ -83,9 +141,20 @@ class DamGeometryBuilder:
         object_ids = {
             "profile_curve": doc.Objects.AddCurve(geometry.profile_curve),
             "body_brep": doc.Objects.AddBrep(geometry.body_brep),
+            "primary_rockfill_brep": doc.Objects.AddBrep(
+                geometry.primary_rockfill_brep
+            ),
             "upstream_slope_surface": doc.Objects.AddBrep(geometry.upstream_slope_surface),
             "crest_platform_surface": doc.Objects.AddBrep(geometry.crest_platform_surface),
         }
+        if geometry.secondary_rockfill_brep is not None:
+            object_ids["secondary_rockfill_brep"] = doc.Objects.AddBrep(
+                geometry.secondary_rockfill_brep
+            )
+        if geometry.secondary_rockfill_profile_curve is not None:
+            object_ids["secondary_rockfill_profile_curve"] = doc.Objects.AddCurve(
+                geometry.secondary_rockfill_profile_curve
+            )
         for index, downstream_surface in enumerate(geometry.downstream_surfaces):
             object_ids[f"downstream_surface_{index}"] = doc.Objects.AddBrep(
                 downstream_surface

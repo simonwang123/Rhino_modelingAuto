@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from config import DEFAULT_DAM_PARAMETERS
 from geometry.profile_calculator import ProfileCalculator
 from models import DamParameters
 
@@ -152,3 +153,145 @@ def test_downstream_profile_is_monotonic_with_benches() -> None:
     for previous, current in zip(downstream_points, downstream_points[1:]):
         assert previous.x < current.x
         assert previous.z >= current.z
+
+
+def test_secondary_rockfill_is_absent_by_default() -> None:
+    profile = ProfileCalculator(make_parameters()).calculate()
+
+    assert profile.secondary_rockfill_zone is None
+
+
+def test_secondary_rockfill_zone_with_boundary_right_side_is_valid() -> None:
+    profile = ProfileCalculator(
+        make_parameters(
+            bench_count=3,
+            bench_width=5.0,
+            secondary_rockfill_points=(
+                (45.0, 150.0),
+                (70.0, 150.0),
+                (160.0, 110.0),
+                (120.0, 110.0),
+            ),
+        )
+    ).calculate()
+
+    assert profile.secondary_rockfill_zone is not None
+    assert [
+        point.as_tuple() for point in profile.secondary_rockfill_zone.points
+    ] == pytest.approx(
+        [
+            (45.0, 0.0, 150.0),
+            (70.0, 0.0, 150.0),
+            (160.0, 0.0, 110.0),
+            (120.0, 0.0, 110.0),
+        ]
+    )
+
+
+def test_secondary_rockfill_requires_exactly_four_points() -> None:
+    with pytest.raises(ValueError, match="exactly 4 points"):
+        make_parameters(
+            secondary_rockfill_points=(
+                (45.0, 150.0),
+                (70.0, 150.0),
+                (120.0, 110.0),
+            )
+        )
+
+
+def test_secondary_rockfill_elevations_must_be_in_dam_height() -> None:
+    with pytest.raises(ValueError, match="within the dam height"):
+        make_parameters(
+            secondary_rockfill_points=(
+                (45.0, 150.0),
+                (70.0, 150.0),
+                (160.0, 190.0),
+                (120.0, 110.0),
+            )
+        )
+
+
+def test_secondary_rockfill_rejects_duplicate_points() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        ProfileCalculator(
+            make_parameters(
+                bench_count=3,
+                bench_width=5.0,
+                secondary_rockfill_points=(
+                    (45.0, 150.0),
+                    (70.0, 150.0),
+                    (70.0, 150.0),
+                    (120.0, 110.0),
+                ),
+            )
+        ).calculate()
+
+
+def test_secondary_rockfill_rejects_zero_area_polygon() -> None:
+    with pytest.raises(ValueError, match="positive area"):
+        ProfileCalculator(
+            make_parameters(
+                bench_count=3,
+                bench_width=5.0,
+                secondary_rockfill_points=(
+                    (45.0, 150.0),
+                    (65.0, 150.0),
+                    (85.0, 150.0),
+                    (105.0, 150.0),
+                ),
+            )
+        ).calculate()
+
+
+def test_secondary_rockfill_rejects_self_intersection() -> None:
+    with pytest.raises(ValueError, match="non-self-intersecting"):
+        ProfileCalculator(
+            make_parameters(
+                bench_count=3,
+                bench_width=5.0,
+                secondary_rockfill_points=(
+                    (45.0, 150.0),
+                    (160.0, 110.0),
+                    (70.0, 150.0),
+                    (120.0, 105.0),
+                ),
+            )
+        ).calculate()
+
+
+def test_secondary_rockfill_left_side_must_be_strictly_inside() -> None:
+    with pytest.raises(ValueError, match="left secondary_rockfill_points"):
+        ProfileCalculator(
+            make_parameters(
+                bench_count=3,
+                bench_width=5.0,
+                secondary_rockfill_points=(
+                    (75.0, 150.0),
+                    (80.0, 150.0),
+                    (160.0, 110.0),
+                    (120.0, 110.0),
+                ),
+            )
+        ).calculate()
+
+
+def test_secondary_rockfill_right_side_must_not_extend_outside_downstream_boundary() -> None:
+    with pytest.raises(ValueError, match="right secondary_rockfill_points"):
+        ProfileCalculator(
+            make_parameters(
+                bench_count=3,
+                bench_width=5.0,
+                secondary_rockfill_points=(
+                    (45.0, 150.0),
+                    (80.0, 150.0),
+                    (170.0, 110.0),
+                    (120.0, 110.0),
+                ),
+            )
+        ).calculate()
+
+
+def test_default_parameters_include_valid_secondary_rockfill_zone() -> None:
+    profile = ProfileCalculator(DEFAULT_DAM_PARAMETERS).calculate()
+
+    assert profile.secondary_rockfill_zone is not None

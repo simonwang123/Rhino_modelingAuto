@@ -19,6 +19,7 @@ class DamParameters:
     bench_count: int = 0
     bench_elevations: Optional[tuple[float, ...]] = None
     bench_width: float = 0.0
+    secondary_rockfill_points: Optional[tuple[tuple[float, float], ...]] = None
 
     ELEVATION_TOLERANCE = 1e-6
 
@@ -57,6 +58,13 @@ class DamParameters:
                 f"within {self.ELEVATION_TOLERANCE}; got {elevation_height!r}."
             )
 
+        normalized_secondary_points = self._normalized_secondary_rockfill_points()
+        object.__setattr__(
+            self,
+            "secondary_rockfill_points",
+            normalized_secondary_points,
+        )
+
     @property
     def calculated_height(self) -> float:
         return self.crest_elevation - self.foundation_elevation
@@ -89,3 +97,30 @@ class DamParameters:
                 )
 
         return sorted_elevations
+
+    def _normalized_secondary_rockfill_points(
+        self,
+    ) -> Optional[tuple[tuple[float, float], ...]]:
+        if self.secondary_rockfill_points in (None, ()):
+            return None
+
+        if len(self.secondary_rockfill_points) != 4:
+            raise ValueError(
+                "secondary_rockfill_points must be empty or contain exactly 4 points."
+            )
+
+        normalized_points: list[tuple[float, float]] = []
+        for point in self.secondary_rockfill_points:
+            if len(point) != 2:
+                raise ValueError(
+                    "Each secondary_rockfill_points item must contain exactly 2 values: (x, z)."
+                )
+            x, z = float(point[0]), float(point[1])
+            if not self.foundation_elevation <= z <= self.crest_elevation:
+                raise ValueError(
+                    "secondary_rockfill_points elevations must be within the dam height; "
+                    f"got z={z!r}."
+                )
+            normalized_points.append((x, z))
+
+        return tuple(normalized_points)

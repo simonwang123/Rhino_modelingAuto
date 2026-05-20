@@ -6,9 +6,10 @@ This project provides the first link in an automated earth-rock dam design
 pipeline: design parameters are converted into Rhino geometry.
 
 The first implementation targets the outer geometry of an earth-rock dam body.
-It supports downstream benches for concrete face rockfill dam layout studies,
-but it is not yet a detailed engineering model with face slabs, toe slabs,
-filters, drains, staged construction, meshing, or numerical simulation.
+It supports downstream benches and primary/secondary rockfill zoning for
+concrete face rockfill dam layout studies, but it is not yet a detailed
+engineering model with face slabs, toe slabs, filters, drains, staged
+construction, meshing, or numerical simulation.
 
 ## Coordinate Convention
 
@@ -21,12 +22,18 @@ from `Y=0` to `Y=axis_length`. Downstream benches are modeled as horizontal
 segments on the downstream profile; each sloped segment keeps the configured
 downstream slope ratio.
 
+Secondary rockfill zones are defined by four user-provided `(x, z)` section
+points. The zone is validated in the section plane, extruded along the dam axis,
+and subtracted from the total body to form a primary rockfill body for later
+material assignment and meshing.
+
 ## Module Responsibilities
 
 - `models`: validated parameter data structures and future knowledge-driven
   modifiers.
 - `geometry`: pure profile calculation, RhinoCommon geometry building, and
-  future mesh generation.
+  future mesh generation. Section polygon helpers keep rockfill-zone validation
+  independent from RhinoCommon.
 - `config`: default design parameters for manual Rhino execution.
 - `export`: future CAD and ANSYS/APDL exporters.
 - `utils`: shared Rhino document helpers.
@@ -37,6 +44,8 @@ downstream slope ratio.
 - `DamParameters` can be produced by a knowledge graph, LLM agent, Bayesian
   optimizer, or external design service.
 - `DamGeometryBuilder` is the current Rhino geometry executor.
+- Primary and secondary rockfill Breps are separated so later finite-element
+  workflows can assign materials and meshes by zone.
 - `MeshGenerator` is reserved for finite-element mesh generation.
 - `APDLExporter` is reserved for ANSYS/APDL command generation.
 - `KnowledgeDrivenModifier` is reserved for rule-based or LLM-based parameter
