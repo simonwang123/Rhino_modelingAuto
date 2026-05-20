@@ -25,7 +25,10 @@ downstream slope ratio.
 Secondary rockfill zones are defined by four user-provided `(x, z)` section
 points. The zone is validated in the section plane, extruded along the dam axis,
 and subtracted from the total body to form a primary rockfill body for later
-material assignment and meshing.
+material assignment and meshing. If the two downstream-side control points lie
+on the downstream boundary, the actual zone boundary follows the downstream
+profile polyline, including bench corners; otherwise the downstream-side edge is
+kept as a straight line that must remain inside the dam section.
 
 ## Module Responsibilities
 

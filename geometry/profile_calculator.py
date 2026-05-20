@@ -7,7 +7,9 @@ from geometry.section_polygon import (
     SectionPoint,
     SectionPolygon,
     point_on_segment,
+    points_equal,
     polygon_is_simple,
+    segments_intersect,
 )
 from models import DamParameters
 
@@ -60,9 +62,13 @@ class RockfillZoneProfile:
     """A user-defined rockfill zone in the dam section."""
 
     points: tuple[ProfilePoint, ProfilePoint, ProfilePoint, ProfilePoint]
+    boundary: tuple[ProfilePoint, ...]
+
+    def boundary_points(self) -> tuple[ProfilePoint, ...]:
+        return self.boundary
 
     def closed_points(self) -> tuple[ProfilePoint, ...]:
-        return (*self.points, self.points[0])
+        return (*self.boundary, self.boundary[0])
 
 
 class ProfileCalculator:
@@ -153,8 +159,8 @@ class ProfileCalculator:
 
         zone_points = tuple(ProfilePoint(x=x, y=0.0, z=z) for x, z in points)
         section_points = tuple(SectionPoint(point.x, point.z) for point in zone_points)
-        zone_polygon = SectionPolygon(section_points)
-        if zone_polygon.area <= GEOMETRY_TOLERANCE:
+        control_polygon = SectionPolygon(section_points)
+        if control_polygon.area <= GEOMETRY_TOLERANCE:
             raise ValueError("secondary_rockfill_points must form a polygon with positive area.")
         if len(set(point.as_tuple() for point in section_points)) != len(section_points):
             raise ValueError("secondary_rockfill_points must not contain duplicate points.")
@@ -187,13 +193,28 @@ class ProfileCalculator:
                 "or on the downstream boundary."
             )
 
+        boundary_points = _build_secondary_zone_boundary(
+            section_points,
+            right_points,
+            dam_polygon,
+            downstream_boundary,
+        )
+        boundary_polygon = SectionPolygon(boundary_points)
+        if boundary_polygon.area <= GEOMETRY_TOLERANCE:
+            raise ValueError("secondary_rockfill_points must form a polygon with positive area.")
+        if not polygon_is_simple(boundary_points):
+            raise ValueError(
+                "secondary_rockfill_points actual boundary must be non-self-intersecting."
+            )
+
         return RockfillZoneProfile(
             points=(
                 zone_points[0],
                 zone_points[1],
                 zone_points[2],
                 zone_points[3],
-            )
+            ),
+            boundary=tuple(ProfilePoint(point.x, 0.0, point.z) for point in boundary_points),
         )
 
 
@@ -205,6 +226,160 @@ def _point_on_open_boundary(
         point_on_segment(point, start, end)
         for start, end in zip(boundary_points, boundary_points[1:])
     )
+
+
+def _build_secondary_zone_boundary(
+    control_points: tuple[SectionPoint, SectionPoint, SectionPoint, SectionPoint],
+    right_edge: tuple[SectionPoint, SectionPoint],
+    dam_polygon: SectionPolygon,
+    downstream_boundary: tuple[SectionPoint, ...],
+) -> tuple[SectionPoint, ...]:
+    right_start, right_end = right_edge
+    if _point_on_open_boundary(
+        right_start,
+        downstream_boundary,
+    ) and _point_on_open_boundary(right_end, downstream_boundary):
+        right_path = _extract_downstream_boundary_path(
+            right_start,
+            right_end,
+            downstream_boundary,
+        )
+    else:
+        _validate_internal_right_edge(
+            right_start,
+            right_end,
+            dam_polygon,
+            downstream_boundary,
+        )
+        right_path = right_edge
+
+    right_edge_index = _find_directed_edge_index(control_points, right_edge)
+    boundary: list[SectionPoint] = []
+    for offset in range(len(control_points)):
+        index = (right_edge_index + 1 + offset) % len(control_points)
+        boundary.append(control_points[index])
+        next_index = (index + 1) % len(control_points)
+        if (control_points[index], control_points[next_index]) == right_edge:
+            boundary.extend(right_path[1:])
+            break
+    return _remove_consecutive_duplicate_points(tuple(boundary))
+
+
+def _extract_downstream_boundary_path(
+    start: SectionPoint,
+    end: SectionPoint,
+    boundary: tuple[SectionPoint, ...],
+) -> tuple[SectionPoint, ...]:
+    start_station = _station_on_polyline(start, boundary)
+    end_station = _station_on_polyline(end, boundary)
+    if start_station is None or end_station is None:
+        raise ValueError("Both right boundary points must lie on the downstream boundary.")
+
+    if start_station <= end_station:
+        middle = tuple(
+            point
+            for point in boundary
+            if start_station < _station_on_polyline_vertex(point, boundary) < end_station
+        )
+        return _remove_consecutive_duplicate_points((start, *middle, end))
+
+    middle = tuple(
+        point
+        for point in reversed(boundary)
+        if end_station < _station_on_polyline_vertex(point, boundary) < start_station
+    )
+    return _remove_consecutive_duplicate_points((start, *middle, end))
+
+
+def _validate_internal_right_edge(
+    start: SectionPoint,
+    end: SectionPoint,
+    dam_polygon: SectionPolygon,
+    downstream_boundary: tuple[SectionPoint, ...],
+) -> None:
+    sample_parameters = (0.25, 0.5, 0.75)
+    for parameter in sample_parameters:
+        point = _interpolate(start, end, parameter)
+        if not dam_polygon.contains_point_or_boundary(point):
+            raise ValueError(
+                "The straight right edge of secondary_rockfill_points must stay inside "
+                "the dam section."
+            )
+
+    for boundary_start, boundary_end in zip(downstream_boundary, downstream_boundary[1:]):
+        if not segments_intersect(start, end, boundary_start, boundary_end):
+            continue
+        if point_on_segment(start, boundary_start, boundary_end) or point_on_segment(
+            end,
+            boundary_start,
+            boundary_end,
+        ):
+            continue
+        raise ValueError(
+            "The straight right edge of secondary_rockfill_points must not intersect "
+            "the downstream boundary."
+        )
+
+
+def _find_directed_edge_index(
+    points: tuple[SectionPoint, SectionPoint, SectionPoint, SectionPoint],
+    edge: tuple[SectionPoint, SectionPoint],
+) -> int:
+    for index, start in enumerate(points):
+        end = points[(index + 1) % len(points)]
+        if points_equal(start, edge[0]) and points_equal(end, edge[1]):
+            return index
+    for index, start in enumerate(points):
+        end = points[(index + 1) % len(points)]
+        if points_equal(start, edge[1]) and points_equal(end, edge[0]):
+            return index
+    raise ValueError("secondary_rockfill_points right side must be an input polygon edge.")
+
+
+def _station_on_polyline(
+    point: SectionPoint,
+    boundary: tuple[SectionPoint, ...],
+) -> float | None:
+    station = 0.0
+    for start, end in zip(boundary, boundary[1:]):
+        segment_length = _distance(start, end)
+        if point_on_segment(point, start, end):
+            return station + _distance(start, point)
+        station += segment_length
+    return None
+
+
+def _station_on_polyline_vertex(
+    point: SectionPoint,
+    boundary: tuple[SectionPoint, ...],
+) -> float:
+    station = _station_on_polyline(point, boundary)
+    if station is None:
+        raise ValueError("Boundary vertex is not on its polyline.")
+    return station
+
+
+def _interpolate(start: SectionPoint, end: SectionPoint, parameter: float) -> SectionPoint:
+    return SectionPoint(
+        x=start.x + (end.x - start.x) * parameter,
+        z=start.z + (end.z - start.z) * parameter,
+    )
+
+
+def _distance(start: SectionPoint, end: SectionPoint) -> float:
+    return ((end.x - start.x) ** 2 + (end.z - start.z) ** 2) ** 0.5
+
+
+def _remove_consecutive_duplicate_points(
+    points: tuple[SectionPoint, ...],
+) -> tuple[SectionPoint, ...]:
+    deduped: list[SectionPoint] = []
+    for point in points:
+        if not deduped or not points_equal(deduped[-1], point):
+            deduped.append(point)
+    if len(deduped) > 1 and points_equal(deduped[0], deduped[-1]):
+        deduped.pop()
+    return tuple(deduped)
 
 
 def _classify_zone_side_points(

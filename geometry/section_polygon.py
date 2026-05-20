@@ -117,6 +117,14 @@ def segments_intersect(
     )
 
 
+def points_equal(
+    first: SectionPoint,
+    second: SectionPoint,
+    tolerance: float = GEOMETRY_TOLERANCE,
+) -> bool:
+    return abs(first.x - second.x) <= tolerance and abs(first.z - second.z) <= tolerance
+
+
 def _orientation(a: SectionPoint, b: SectionPoint, c: SectionPoint) -> int:
     value = (b.z - a.z) * (c.x - b.x) - (b.x - a.x) * (c.z - b.z)
     if abs(value) <= GEOMETRY_TOLERANCE:

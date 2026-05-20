@@ -49,7 +49,10 @@ class DamGeometryBuilder:
         Rhino = _require_rhino()
         if self.profile.secondary_rockfill_zone is None:
             return None
-        return self._build_section_brep(Rhino, self.profile.secondary_rockfill_zone.points)
+        return self._build_section_brep(
+            Rhino,
+            self.profile.secondary_rockfill_zone.boundary_points(),
+        )
 
     def build_primary_rockfill_brep(self, body_brep: Any, secondary_brep: Any | None) -> Any:
         if secondary_brep is None:

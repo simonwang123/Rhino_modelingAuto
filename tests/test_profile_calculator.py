@@ -186,6 +186,126 @@ def test_secondary_rockfill_zone_with_boundary_right_side_is_valid() -> None:
             (120.0, 0.0, 110.0),
         ]
     )
+    assert [
+        point.as_tuple() for point in profile.secondary_rockfill_zone.boundary_points()
+    ] == pytest.approx(
+        [
+            (160.0, 0.0, 110.0),
+            (120.0, 0.0, 110.0),
+            (45.0, 0.0, 150.0),
+            (70.0, 0.0, 150.0),
+            (90.0, 0.0, 140.0),
+            (95.0, 0.0, 140.0),
+            (135.0, 0.0, 120.0),
+            (140.0, 0.0, 120.0),
+        ]
+    )
+
+
+def test_secondary_rockfill_right_boundary_follows_downstream_boundary_across_bench() -> None:
+    profile = ProfileCalculator(
+        make_parameters(
+            bench_count=3,
+            bench_width=5.0,
+            secondary_rockfill_points=(
+                (20.0, 170.0),
+                (25.0, 170.0),
+                (70.0, 150.0),
+                (45.0, 150.0),
+            ),
+        )
+    ).calculate()
+
+    assert profile.secondary_rockfill_zone is not None
+    assert [
+        point.as_tuple() for point in profile.secondary_rockfill_zone.boundary_points()
+    ] == pytest.approx(
+        [
+            (70.0, 0.0, 150.0),
+            (45.0, 0.0, 150.0),
+            (20.0, 0.0, 170.0),
+            (25.0, 0.0, 170.0),
+            (45.0, 0.0, 160.0),
+            (50.0, 0.0, 160.0),
+        ]
+    )
+
+
+def test_secondary_rockfill_right_boundary_uses_line_when_one_point_is_internal() -> None:
+    profile = ProfileCalculator(
+        make_parameters(
+            bench_count=3,
+            bench_width=5.0,
+            secondary_rockfill_points=(
+                (20.0, 170.0),
+                (25.0, 170.0),
+                (55.0, 150.0),
+                (35.0, 150.0),
+            ),
+        )
+    ).calculate()
+
+    assert profile.secondary_rockfill_zone is not None
+    assert [
+        point.as_tuple() for point in profile.secondary_rockfill_zone.boundary_points()
+    ] == pytest.approx(
+        [
+            (55.0, 0.0, 150.0),
+            (35.0, 0.0, 150.0),
+            (20.0, 0.0, 170.0),
+            (25.0, 0.0, 170.0),
+        ]
+    )
+
+
+def test_secondary_rockfill_right_boundary_uses_line_when_both_points_are_internal() -> None:
+    profile = ProfileCalculator(
+        make_parameters(
+            bench_count=3,
+            bench_width=5.0,
+            secondary_rockfill_points=(
+                (20.0, 170.0),
+                (24.0, 170.0),
+                (55.0, 150.0),
+                (35.0, 150.0),
+            ),
+        )
+    ).calculate()
+
+    assert profile.secondary_rockfill_zone is not None
+    assert len(profile.secondary_rockfill_zone.boundary_points()) == 4
+
+
+def test_secondary_rockfill_straight_right_boundary_must_not_cross_downstream_boundary() -> None:
+    with pytest.raises(ValueError, match="must not intersect"):
+        ProfileCalculator(
+            make_parameters(
+                bench_count=3,
+                bench_width=5.0,
+                secondary_rockfill_points=(
+                    (-1.0, 170.0),
+                    (5.0, 180.0),
+                    (155.0, 105.0),
+                    (50.0, 105.0),
+                ),
+            )
+        ).calculate()
+
+
+def test_secondary_rockfill_straight_right_boundary_must_stay_inside_section() -> None:
+    with pytest.raises(ValueError, match="must stay inside"):
+        ProfileCalculator(
+            make_parameters(
+                bench_count=3,
+                bench_width=5.0,
+                secondary_rockfill_points=(
+                    (-1.0, 170.0),
+                    (5.0, 180.0),
+                    (160.0, 105.0),
+                    (50.0, 105.0),
+                ),
+            )
+        ).calculate()
 
 
 def test_secondary_rockfill_requires_exactly_four_points() -> None:
