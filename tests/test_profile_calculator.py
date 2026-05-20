@@ -55,6 +55,8 @@ def test_profile_points_are_calculated_from_slopes_and_elevations() -> None:
     assert profile.downstream_crest.as_tuple() == pytest.approx((5.0, 0.0, 180.0))
     assert profile.downstream_profile_points == ()
     assert profile.downstream_toe.as_tuple() == pytest.approx((165.0, 0.0, 100.0))
+    assert profile.cushion_layer is None
+    assert profile.transition_layer is None
 
 
 def test_profile_point_order_forms_closed_trapezoid() -> None:
@@ -159,6 +161,83 @@ def test_secondary_rockfill_is_absent_by_default() -> None:
     profile = ProfileCalculator(make_parameters()).calculate()
 
     assert profile.secondary_rockfill_zone is None
+
+
+def test_cushion_layer_points_are_calculated_from_horizontal_thicknesses() -> None:
+    profile = ProfileCalculator(
+        make_parameters(
+            cushion_layer_top_thickness=2.0,
+            cushion_layer_bottom_thickness=8.0,
+        )
+    ).calculate()
+
+    assert profile.cushion_layer is not None
+    assert [
+        point.as_tuple() for point in profile.cushion_layer.boundary_points()
+    ] == pytest.approx(
+        [
+            (-205.0, 0.0, 100.0),
+            (-5.0, 0.0, 180.0),
+            (-3.0, 0.0, 180.0),
+            (-197.0, 0.0, 100.0),
+        ]
+    )
+    assert profile.transition_layer is None
+
+
+def test_transition_layer_reuses_cushion_layer_inner_boundary() -> None:
+    profile = ProfileCalculator(
+        make_parameters(
+            cushion_layer_top_thickness=2.0,
+            cushion_layer_bottom_thickness=8.0,
+            transition_layer_top_thickness=3.0,
+            transition_layer_bottom_thickness=12.0,
+        )
+    ).calculate()
+
+    assert profile.cushion_layer is not None
+    assert profile.transition_layer is not None
+    cushion_points = profile.cushion_layer.boundary_points()
+    transition_points = profile.transition_layer.boundary_points()
+
+    assert transition_points[0].as_tuple() == pytest.approx(cushion_points[3].as_tuple())
+    assert transition_points[1].as_tuple() == pytest.approx(cushion_points[2].as_tuple())
+    assert [point.as_tuple() for point in transition_points] == pytest.approx(
+        [
+            (-197.0, 0.0, 100.0),
+            (-3.0, 0.0, 180.0),
+            (0.0, 0.0, 180.0),
+            (-185.0, 0.0, 100.0),
+        ]
+    )
+
+
+def test_upstream_layer_thicknesses_must_be_non_negative() -> None:
+    with pytest.raises(ValueError, match="cushion_layer thicknesses"):
+        make_parameters(cushion_layer_top_thickness=-1.0)
+
+
+def test_upstream_layer_top_and_bottom_thicknesses_must_be_enabled_together() -> None:
+    with pytest.raises(ValueError, match="both be positive"):
+        make_parameters(cushion_layer_top_thickness=2.0)
+
+
+def test_transition_layer_requires_cushion_layer() -> None:
+    with pytest.raises(ValueError, match="requires cushion_layer"):
+        make_parameters(
+            transition_layer_top_thickness=3.0,
+            transition_layer_bottom_thickness=12.0,
+        )
+
+
+def test_upstream_layers_must_stay_inside_dam_section() -> None:
+    with pytest.raises(ValueError, match="cushion_layer must stay inside"):
+        ProfileCalculator(
+            make_parameters(
+                cushion_layer_top_thickness=11.0,
+                cushion_layer_bottom_thickness=8.0,
+            )
+        ).calculate()
 
 
 def test_secondary_rockfill_zone_with_boundary_right_side_is_valid() -> None:
@@ -415,3 +494,5 @@ def test_default_parameters_include_valid_secondary_rockfill_zone() -> None:
     profile = ProfileCalculator(DEFAULT_DAM_PARAMETERS).calculate()
 
     assert profile.secondary_rockfill_zone is not None
+    assert profile.cushion_layer is not None
+    assert profile.transition_layer is not None

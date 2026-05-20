@@ -13,6 +13,8 @@ class DamGeometry:
     body_brep: Any
     primary_rockfill_brep: Any
     secondary_rockfill_brep: Any | None
+    cushion_layer_brep: Any | None
+    transition_layer_brep: Any | None
     secondary_rockfill_profile_curve: Any | None
     upstream_slope_surface: Any
     downstream_surfaces: tuple[Any, ...]
@@ -54,21 +56,43 @@ class DamGeometryBuilder:
             self.profile.secondary_rockfill_zone.boundary_points(),
         )
 
-    def build_primary_rockfill_brep(self, body_brep: Any, secondary_brep: Any | None) -> Any:
-        if secondary_brep is None:
+    def build_cushion_layer_brep(self) -> Any | None:
+        Rhino = _require_rhino()
+        if self.profile.cushion_layer is None:
+            return None
+        return self._build_section_brep(
+            Rhino,
+            self.profile.cushion_layer.boundary_points(),
+        )
+
+    def build_transition_layer_brep(self) -> Any | None:
+        Rhino = _require_rhino()
+        if self.profile.transition_layer is None:
+            return None
+        return self._build_section_brep(
+            Rhino,
+            self.profile.transition_layer.boundary_points(),
+        )
+
+    def build_primary_rockfill_brep(
+        self,
+        body_brep: Any,
+        zone_breps: tuple[Any | None, ...],
+    ) -> Any:
+        subtraction_breps = tuple(brep for brep in zone_breps if brep is not None)
+        if not subtraction_breps:
             return body_brep
 
         Rhino = _require_rhino()
         tolerance = _model_tolerance(Rhino)
         body = body_brep.DuplicateBrep() if hasattr(body_brep, "DuplicateBrep") else body_brep
-        secondary = (
-            secondary_brep.DuplicateBrep()
-            if hasattr(secondary_brep, "DuplicateBrep")
-            else secondary_brep
+        subtractors = tuple(
+            brep.DuplicateBrep() if hasattr(brep, "DuplicateBrep") else brep
+            for brep in subtraction_breps
         )
         difference = Rhino.Geometry.Brep.CreateBooleanDifference(
             [body],
-            [secondary],
+            subtractors,
             tolerance,
         )
         if not difference:
@@ -121,12 +145,19 @@ class DamGeometryBuilder:
         upstream, downstream, crest = self.build_surfaces()
         body = self.build_body_brep()
         secondary = self.build_secondary_rockfill_brep()
-        primary = self.build_primary_rockfill_brep(body, secondary)
+        cushion = self.build_cushion_layer_brep()
+        transition = self.build_transition_layer_brep()
+        primary = self.build_primary_rockfill_brep(
+            body,
+            (secondary, cushion, transition),
+        )
         return DamGeometry(
             profile_curve=self.build_profile_curve(),
             body_brep=body,
             primary_rockfill_brep=primary,
             secondary_rockfill_brep=secondary,
+            cushion_layer_brep=cushion,
+            transition_layer_brep=transition,
             secondary_rockfill_profile_curve=self.build_secondary_rockfill_profile_curve(),
             upstream_slope_surface=upstream,
             downstream_surfaces=downstream,
@@ -153,6 +184,14 @@ class DamGeometryBuilder:
         if geometry.secondary_rockfill_brep is not None:
             object_ids["secondary_rockfill_brep"] = doc.Objects.AddBrep(
                 geometry.secondary_rockfill_brep
+            )
+        if geometry.cushion_layer_brep is not None:
+            object_ids["cushion_layer_brep"] = doc.Objects.AddBrep(
+                geometry.cushion_layer_brep
+            )
+        if geometry.transition_layer_brep is not None:
+            object_ids["transition_layer_brep"] = doc.Objects.AddBrep(
+                geometry.transition_layer_brep
             )
         if geometry.secondary_rockfill_profile_curve is not None:
             object_ids["secondary_rockfill_profile_curve"] = doc.Objects.AddCurve(

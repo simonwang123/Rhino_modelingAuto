@@ -36,6 +36,8 @@ class DamProfile:
     downstream_profile_points: tuple[ProfilePoint, ...]
     downstream_toe: ProfilePoint
     secondary_rockfill_zone: "RockfillZoneProfile | None" = None
+    cushion_layer: "UpstreamLayerProfile | None" = None
+    transition_layer: "UpstreamLayerProfile | None" = None
 
     def points(self) -> tuple[ProfilePoint, ...]:
         return (
@@ -69,6 +71,19 @@ class RockfillZoneProfile:
 
     def closed_points(self) -> tuple[ProfilePoint, ...]:
         return (*self.boundary, self.boundary[0])
+
+
+@dataclass(frozen=True)
+class UpstreamLayerProfile:
+    """An automatically calculated upstream zoning layer."""
+
+    points: tuple[ProfilePoint, ProfilePoint, ProfilePoint, ProfilePoint]
+
+    def boundary_points(self) -> tuple[ProfilePoint, ...]:
+        return self.points
+
+    def closed_points(self) -> tuple[ProfilePoint, ...]:
+        return (*self.points, self.points[0])
 
 
 class ProfileCalculator:
@@ -110,6 +125,7 @@ class ProfileCalculator:
             downstream_toe=downstream_toe,
         )
         secondary_zone = self._calculate_secondary_rockfill_zone(profile)
+        cushion_layer, transition_layer = self._calculate_upstream_layers(profile)
 
         return DamProfile(
             upstream_toe=profile.upstream_toe,
@@ -118,6 +134,8 @@ class ProfileCalculator:
             downstream_profile_points=profile.downstream_profile_points,
             downstream_toe=profile.downstream_toe,
             secondary_rockfill_zone=secondary_zone,
+            cushion_layer=cushion_layer,
+            transition_layer=transition_layer,
         )
 
     def _calculate_downstream_profile(
@@ -216,6 +234,106 @@ class ProfileCalculator:
             ),
             boundary=tuple(ProfilePoint(point.x, 0.0, point.z) for point in boundary_points),
         )
+
+    def _calculate_upstream_layers(
+        self,
+        dam_profile: DamProfile,
+    ) -> tuple[UpstreamLayerProfile | None, UpstreamLayerProfile | None]:
+        params = self.parameters
+        if not _layer_enabled(
+            params.cushion_layer_top_thickness,
+            params.cushion_layer_bottom_thickness,
+        ):
+            return None, None
+
+        cushion_top_inner = ProfilePoint(
+            x=dam_profile.upstream_crest.x + params.cushion_layer_top_thickness,
+            y=0.0,
+            z=dam_profile.upstream_crest.z,
+        )
+        cushion_bottom_inner = ProfilePoint(
+            x=dam_profile.upstream_toe.x + params.cushion_layer_bottom_thickness,
+            y=0.0,
+            z=dam_profile.upstream_toe.z,
+        )
+        cushion_layer = UpstreamLayerProfile(
+            points=(
+                dam_profile.upstream_toe,
+                dam_profile.upstream_crest,
+                cushion_top_inner,
+                cushion_bottom_inner,
+            )
+        )
+        _validate_upstream_layer_profile(
+            cushion_layer,
+            dam_profile,
+            "cushion_layer",
+        )
+
+        if not _layer_enabled(
+            params.transition_layer_top_thickness,
+            params.transition_layer_bottom_thickness,
+        ):
+            return cushion_layer, None
+
+        transition_top_inner = ProfilePoint(
+            x=cushion_top_inner.x + params.transition_layer_top_thickness,
+            y=0.0,
+            z=cushion_top_inner.z,
+        )
+        transition_bottom_inner = ProfilePoint(
+            x=cushion_bottom_inner.x + params.transition_layer_bottom_thickness,
+            y=0.0,
+            z=cushion_bottom_inner.z,
+        )
+        transition_layer = UpstreamLayerProfile(
+            points=(
+                cushion_bottom_inner,
+                cushion_top_inner,
+                transition_top_inner,
+                transition_bottom_inner,
+            )
+        )
+        _validate_upstream_layer_profile(
+            transition_layer,
+            dam_profile,
+            "transition_layer",
+        )
+
+        return cushion_layer, transition_layer
+
+
+def _layer_enabled(top_thickness: float, bottom_thickness: float) -> bool:
+    return top_thickness > 0 and bottom_thickness > 0
+
+
+def _validate_upstream_layer_profile(
+    layer: UpstreamLayerProfile,
+    dam_profile: DamProfile,
+    layer_name: str,
+) -> None:
+    section_points = tuple(SectionPoint(point.x, point.z) for point in layer.points)
+    layer_polygon = SectionPolygon(section_points)
+    if layer_polygon.area <= GEOMETRY_TOLERANCE:
+        raise ValueError(f"{layer_name} must form a polygon with positive area.")
+    if len(set(point.as_tuple() for point in section_points)) != len(section_points):
+        raise ValueError(f"{layer_name} must not contain duplicate points.")
+    if not polygon_is_simple(section_points):
+        raise ValueError(f"{layer_name} must form a non-self-intersecting polygon.")
+
+    dam_polygon = SectionPolygon(
+        tuple(SectionPoint(point.x, point.z) for point in dam_profile.points())
+    )
+    for point in section_points:
+        if not dam_polygon.contains_point_or_boundary(point):
+            raise ValueError(f"{layer_name} must stay inside the dam section.")
+
+    for start, end in layer_polygon.closed_edges():
+        for parameter in (0.25, 0.5, 0.75):
+            if not dam_polygon.contains_point_or_boundary(
+                _interpolate(start, end, parameter)
+            ):
+                raise ValueError(f"{layer_name} must stay inside the dam section.")
 
 
 def _point_on_open_boundary(

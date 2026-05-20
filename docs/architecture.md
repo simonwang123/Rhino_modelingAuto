@@ -30,6 +30,13 @@ on the downstream boundary, the actual zone boundary follows the downstream
 profile polyline, including bench corners; otherwise the downstream-side edge is
 kept as a straight line that must remain inside the dam section.
 
+Upstream cushion and transition layers are calculated automatically from top and
+bottom horizontal thicknesses. The cushion layer is adjacent to the upstream dam
+slope, and the transition layer is adjacent to the cushion layer on the dam-body
+side. Both layers extend from the crest elevation to the foundation elevation,
+are extruded along the dam axis, and are subtracted from the primary rockfill
+body.
+
 ## Module Responsibilities
 
 - `models`: validated parameter data structures and future knowledge-driven
@@ -47,8 +54,9 @@ kept as a straight line that must remain inside the dam section.
 - `DamParameters` can be produced by a knowledge graph, LLM agent, Bayesian
   optimizer, or external design service.
 - `DamGeometryBuilder` is the current Rhino geometry executor.
-- Primary and secondary rockfill Breps are separated so later finite-element
-  workflows can assign materials and meshes by zone.
+- Primary rockfill, secondary rockfill, cushion layer, and transition layer
+  Breps are separated so later finite-element workflows can assign materials and
+  meshes by zone.
 - `MeshGenerator` is reserved for finite-element mesh generation.
 - `APDLExporter` is reserved for ANSYS/APDL command generation.
 - `KnowledgeDrivenModifier` is reserved for rule-based or LLM-based parameter

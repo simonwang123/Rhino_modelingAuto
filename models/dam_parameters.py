@@ -16,6 +16,10 @@ class DamParameters:
     axis_length: float
     foundation_elevation: float
     crest_elevation: float
+    cushion_layer_top_thickness: float = 0.0
+    cushion_layer_bottom_thickness: float = 0.0
+    transition_layer_top_thickness: float = 0.0
+    transition_layer_bottom_thickness: float = 0.0
     bench_count: int = 0
     bench_elevations: Optional[tuple[float, ...]] = None
     bench_width: float = 0.0
@@ -42,6 +46,8 @@ class DamParameters:
             raise ValueError("bench_width must be positive when bench_count is greater than 0.")
         if self.bench_count == 0 and self.bench_width != 0:
             raise ValueError("bench_width must be 0 when bench_count is 0.")
+
+        self._validate_upstream_layer_thicknesses()
 
         normalized_elevations = self._normalized_bench_elevations()
         object.__setattr__(self, "bench_elevations", normalized_elevations)
@@ -124,3 +130,34 @@ class DamParameters:
             normalized_points.append((x, z))
 
         return tuple(normalized_points)
+
+    def _validate_upstream_layer_thicknesses(self) -> None:
+        cushion_enabled = self._layer_thickness_pair_enabled(
+            self.cushion_layer_top_thickness,
+            self.cushion_layer_bottom_thickness,
+            "cushion_layer",
+        )
+        transition_enabled = self._layer_thickness_pair_enabled(
+            self.transition_layer_top_thickness,
+            self.transition_layer_bottom_thickness,
+            "transition_layer",
+        )
+        if transition_enabled and not cushion_enabled:
+            raise ValueError("transition_layer requires cushion_layer to be enabled.")
+
+    @staticmethod
+    def _layer_thickness_pair_enabled(
+        top_thickness: float,
+        bottom_thickness: float,
+        layer_name: str,
+    ) -> bool:
+        if top_thickness < 0 or bottom_thickness < 0:
+            raise ValueError(f"{layer_name} thicknesses must be non-negative.")
+        if top_thickness == 0 and bottom_thickness == 0:
+            return False
+        if top_thickness <= 0 or bottom_thickness <= 0:
+            raise ValueError(
+                f"{layer_name} top and bottom thicknesses must both be positive "
+                "when the layer is enabled."
+            )
+        return True
