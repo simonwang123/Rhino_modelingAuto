@@ -1,4 +1,7 @@
 from .dam_geometry_builder import (
+    ApdlGeometryIssue,
+    ApdlGeometryQualityError,
+    ApdlPreparationOptions,
     ConstructionStageGeometry,
     ConstructionStagePart,
     DamGeometry,
@@ -14,6 +17,9 @@ from .profile_calculator import (
 from .section_polygon import SectionPoint, SectionPolygon
 
 __all__ = [
+    "ApdlGeometryIssue",
+    "ApdlGeometryQualityError",
+    "ApdlPreparationOptions",
     "DamGeometry",
     "DamGeometryBuilder",
     "ConstructionStageGeometry",

@@ -1,10 +1,62 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from geometry.profile_calculator import DamProfile, ProfileCalculator, ProfilePoint
 from models import ConstructionStage, DamParameters, TerrainBoundary, TerrainContour
+
+
+@dataclass(frozen=True)
+class ApdlPreparationOptions:
+    """Options for generating ANSYS/APDL-ready Rhino stage solids."""
+
+    include_global_geometry: bool = False
+    target_unit_system: str = "Meters"
+    min_edge_length: float = 1.0
+    min_face_area: float = 1.0
+    shrink_trimmed_faces: bool = True
+    merge_coplanar_faces: bool = True
+    fail_on_remaining_small_features: bool = True
+
+    def __post_init__(self) -> None:
+        if self.target_unit_system not in {"Meters"}:
+            raise ValueError("target_unit_system currently supports only 'Meters'.")
+        if self.min_edge_length < 0:
+            raise ValueError("min_edge_length must be non-negative.")
+        if self.min_face_area < 0:
+            raise ValueError("min_face_area must be non-negative.")
+        if self.include_global_geometry:
+            raise ValueError("APDL stage export must not include global geometry.")
+
+
+@dataclass(frozen=True)
+class ApdlGeometryIssue:
+    object_name: str
+    issue_type: str
+    value: float
+    threshold: float
+    location: tuple[float, float, float] | None
+
+
+class ApdlGeometryQualityError(RuntimeError):
+    """Raised when APDL geometry cleanup cannot remove risky small features."""
+
+    def __init__(self, issues: tuple[ApdlGeometryIssue, ...]) -> None:
+        self.issues = issues
+        lines = ["APDL geometry preparation found unresolved geometry issues:"]
+        for issue in issues:
+            location = (
+                ""
+                if issue.location is None
+                else f" at ({issue.location[0]:g}, {issue.location[1]:g}, {issue.location[2]:g})"
+            )
+            lines.append(
+                f"- {issue.object_name}: {issue.issue_type}={issue.value:g} "
+                f"< threshold {issue.threshold:g}{location}"
+            )
+        super().__init__("\n".join(lines))
 
 
 @dataclass(frozen=True)
@@ -297,6 +349,266 @@ class DamGeometryBuilder:
         doc.Views.Redraw()
         return object_ids
 
+    def build_apdl_stage_model(
+        self,
+        options: ApdlPreparationOptions | None = None,
+    ) -> tuple[ConstructionStageGeometry, ...]:
+        """Build cleaned construction-stage solids for ANSYS/APDL import."""
+
+        if options is None:
+            options = ApdlPreparationOptions()
+        geometry = self.build()
+        prepared_stages: list[ConstructionStageGeometry] = []
+        issues: list[ApdlGeometryIssue] = []
+        for stage_geometry in geometry.construction_stages:
+            prepared_parts: list[ConstructionStagePart] = []
+            for part in stage_geometry.parts:
+                prepared_breps: list[Any] = []
+                for index, brep in enumerate(part.breps, start=1):
+                    object_name = _stage_part_name(stage_geometry.stage, part.zone_name)
+                    if len(part.breps) > 1:
+                        object_name = f"{object_name}__part_{index:02d}"
+                    try:
+                        cleaned = self._prepare_apdl_stage_brep(
+                            brep,
+                            geometry.body_brep,
+                            object_name,
+                            stage_geometry.stage,
+                            options,
+                        )
+                    except ApdlGeometryQualityError as exc:
+                        issues.extend(exc.issues)
+                    else:
+                        prepared_breps.append(cleaned)
+                if prepared_breps:
+                    prepared_parts.append(
+                        ConstructionStagePart(
+                            zone_name=part.zone_name,
+                            breps=tuple(prepared_breps),
+                        )
+                    )
+            if prepared_parts:
+                prepared_stages.append(
+                    ConstructionStageGeometry(
+                        stage=stage_geometry.stage,
+                        parts=tuple(prepared_parts),
+                    )
+                )
+
+        if issues and options.fail_on_remaining_small_features:
+            raise ApdlGeometryQualityError(tuple(issues))
+        return tuple(prepared_stages)
+
+    def add_apdl_stage_model_to_document(
+        self,
+        doc: Any | None = None,
+        options: ApdlPreparationOptions | None = None,
+    ) -> dict[str, Any]:
+        """Add only APDL-ready construction-stage solids to a Rhino document."""
+
+        Rhino = _require_rhino()
+        if doc is None:
+            doc = Rhino.RhinoDoc.ActiveDoc
+        if doc is None:
+            raise RuntimeError("No active Rhino document is available.")
+        if options is None:
+            options = ApdlPreparationOptions()
+
+        _set_document_unit_system(Rhino, doc, options.target_unit_system)
+        object_ids: dict[str, Any] = {}
+        for stage_geometry in self.build_apdl_stage_model(options):
+            for part in stage_geometry.parts:
+                object_ids.update(
+                    self._add_stage_part_to_document(doc, stage_geometry.stage, part)
+                )
+        doc.Views.Redraw()
+        return object_ids
+
+    def export_apdl_stage_3dm(
+        self,
+        output_path: str | Path,
+        options: ApdlPreparationOptions | None = None,
+    ) -> Path:
+        """Write an APDL-ready 3dm containing only cleaned construction-stage solids."""
+
+        Rhino = _require_rhino()
+        if options is None:
+            options = ApdlPreparationOptions()
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        file3dm = Rhino.FileIO.File3dm()
+        _set_file_unit_system(Rhino, file3dm, options.target_unit_system)
+        for stage_geometry in self.build_apdl_stage_model(options):
+            for part in stage_geometry.parts:
+                base_name = _stage_part_name(stage_geometry.stage, part.zone_name)
+                for index, brep in enumerate(part.breps, start=1):
+                    name = (
+                        base_name
+                        if len(part.breps) == 1
+                        else f"{base_name}__part_{index:02d}"
+                    )
+                    attributes = Rhino.DocObjects.ObjectAttributes()
+                    attributes.Name = name
+                    file3dm.Objects.AddBrep(brep, attributes)
+
+        if not file3dm.Write(str(output), 8):
+            raise RuntimeError(f"Failed to write APDL stage 3dm to {output}.")
+        return output
+
+    def _prepare_apdl_stage_brep(
+        self,
+        brep: Any,
+        body_brep: Any,
+        object_name: str,
+        stage: ConstructionStage,
+        options: ApdlPreparationOptions,
+    ) -> Any:
+        clipped = self._clip_stage_brep_to_body(brep, body_brep, object_name)
+        cleaned = self._clean_apdl_brep(clipped, object_name, options)
+        issues = self._collect_apdl_geometry_issues(
+            cleaned,
+            object_name,
+            stage,
+            options,
+        )
+        if issues and options.fail_on_remaining_small_features:
+            raise ApdlGeometryQualityError(issues)
+        return cleaned
+
+    def _clip_stage_brep_to_body(
+        self,
+        stage_brep: Any,
+        body_brep: Any,
+        object_name: str,
+    ) -> Any:
+        Rhino = _require_rhino()
+        tolerance = _model_tolerance(Rhino)
+        stage = (
+            stage_brep.DuplicateBrep()
+            if hasattr(stage_brep, "DuplicateBrep")
+            else stage_brep
+        )
+        body = body_brep.DuplicateBrep() if hasattr(body_brep, "DuplicateBrep") else body_brep
+        intersections = Rhino.Geometry.Brep.CreateBooleanIntersection(
+            [stage],
+            [body],
+            tolerance,
+        )
+        if not intersections:
+            raise RuntimeError(f"APDL clipping produced no valid {object_name}.")
+
+        valid_breps = tuple(
+            clipped for clipped in intersections if clipped is not None and clipped.IsValid
+        )
+        if not valid_breps:
+            raise RuntimeError(f"APDL clipping produced invalid {object_name}.")
+        if len(valid_breps) > 1:
+            joined = Rhino.Geometry.Brep.JoinBreps(list(valid_breps), tolerance)
+            if joined and len(joined) == 1 and joined[0].IsValid:
+                return joined[0]
+        return valid_breps[0]
+
+    def _clean_apdl_brep(
+        self,
+        brep: Any,
+        object_name: str,
+        options: ApdlPreparationOptions,
+    ) -> Any:
+        Rhino = _require_rhino()
+        tolerance = _model_tolerance(Rhino)
+        cleaned = brep.DuplicateBrep() if hasattr(brep, "DuplicateBrep") else brep
+
+        if options.shrink_trimmed_faces:
+            faces = getattr(cleaned, "Faces", None)
+            if faces is not None and hasattr(faces, "ShrinkFaces"):
+                faces.ShrinkFaces()
+            elif hasattr(cleaned, "ShrinkFaces"):
+                cleaned.ShrinkFaces()
+
+        if options.merge_coplanar_faces and hasattr(cleaned, "MergeCoplanarFaces"):
+            _call_with_supported_args(
+                cleaned.MergeCoplanarFaces,
+                (tolerance,),
+                (tolerance, _model_angle_tolerance(Rhino)),
+            )
+
+        if hasattr(cleaned, "RebuildEdges"):
+            _call_with_supported_args(
+                cleaned.RebuildEdges,
+                (tolerance, True, True),
+                (tolerance, True, True, True),
+            )
+
+        if hasattr(cleaned, "Compact"):
+            cleaned.Compact()
+
+        if not _brep_is_valid_solid_manifold(cleaned):
+            raise RuntimeError(f"APDL cleanup produced invalid or open {object_name}.")
+        return cleaned
+
+    def _collect_apdl_geometry_issues(
+        self,
+        brep: Any,
+        object_name: str,
+        stage: ConstructionStage,
+        options: ApdlPreparationOptions,
+    ) -> tuple[ApdlGeometryIssue, ...]:
+        Rhino = _require_rhino()
+        tolerance = max(_model_tolerance(Rhino), 1e-6)
+        issues: list[ApdlGeometryIssue] = []
+
+        bbox = brep.GetBoundingBox(True) if _accepts_get_bounding_box_bool(brep) else brep.GetBoundingBox()
+        if bbox.Min.Z < stage.bottom_elevation - tolerance:
+            issues.append(
+                ApdlGeometryIssue(
+                    object_name,
+                    "below_stage_bottom",
+                    stage.bottom_elevation - bbox.Min.Z,
+                    tolerance,
+                    _point_tuple(bbox.Min),
+                )
+            )
+        if bbox.Max.Z > stage.top_elevation + tolerance:
+            issues.append(
+                ApdlGeometryIssue(
+                    object_name,
+                    "above_stage_top",
+                    bbox.Max.Z - stage.top_elevation,
+                    tolerance,
+                    _point_tuple(bbox.Max),
+                )
+            )
+
+        for edge in _iter_geometry_collection(getattr(brep, "Edges", ())):
+            length = _edge_length(edge)
+            if length < options.min_edge_length:
+                location = _midpoint_tuple(edge.PointAtStart, edge.PointAtEnd)
+                issues.append(
+                    ApdlGeometryIssue(
+                        object_name,
+                        "edge_length",
+                        length,
+                        options.min_edge_length,
+                        location,
+                    )
+                )
+
+        for face in _iter_geometry_collection(getattr(brep, "Faces", ())):
+            area = _face_area(Rhino, face)
+            if area is not None and area < options.min_face_area:
+                location = _bbox_center_tuple(face.GetBoundingBox(True))
+                issues.append(
+                    ApdlGeometryIssue(
+                        object_name,
+                        "face_area",
+                        area,
+                        options.min_face_area,
+                        location,
+                    )
+                )
+        return tuple(issues)
+
     def _build_planar_caps(
         self,
         Rhino: Any,
@@ -579,14 +891,7 @@ class DamGeometryBuilder:
         y_values = [point[1] for point in points]
         x_min, x_max = min(x_values), max(x_values)
         y_min, y_max = min(0.0, *y_values), max(self.parameters.axis_length, *y_values)
-        x_padding = max((x_max - x_min) * 0.05, 10.0)
-        y_padding = max((y_max - y_min) * 0.05, 10.0)
-        return (
-            x_min - x_padding,
-            x_max + x_padding,
-            y_min - y_padding,
-            y_max + y_padding,
-        )
+        return (x_min, x_max, y_min, y_max)
 
     def _build_box_brep(
         self,
@@ -694,11 +999,118 @@ def _format_elevation_for_name(elevation: float) -> str:
     return text.replace("-", "minus_").replace(".", "p")
 
 
+def _call_with_supported_args(method: Any, *arg_sets: tuple[Any, ...]) -> Any:
+    last_error: Exception | None = None
+    for args in arg_sets:
+        try:
+            return method(*args)
+        except TypeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    return method()
+
+
+def _brep_is_valid_solid_manifold(brep: Any) -> bool:
+    return (
+        _bool_attribute(brep, "IsValid")
+        and _bool_attribute(brep, "IsSolid")
+        and _bool_attribute(brep, "IsManifold")
+    )
+
+
+def _bool_attribute(obj: Any, name: str) -> bool:
+    value = getattr(obj, name, False)
+    if callable(value):
+        value = value()
+    return bool(value)
+
+
+def _iter_geometry_collection(collection: Any) -> tuple[Any, ...]:
+    try:
+        return tuple(collection)
+    except TypeError:
+        count = getattr(collection, "Count", None)
+        if count is None:
+            count = len(collection)
+        return tuple(collection[index] for index in range(count))
+
+
+def _edge_length(edge: Any) -> float:
+    if hasattr(edge, "GetLength"):
+        return float(edge.GetLength())
+    return _distance_between_points(edge.PointAtStart, edge.PointAtEnd)
+
+
+def _face_area(Rhino: Any, face: Any) -> float | None:
+    area_properties = Rhino.Geometry.AreaMassProperties.Compute(face)
+    if area_properties is None:
+        return None
+    return float(area_properties.Area)
+
+
+def _distance_between_points(first: Any, second: Any) -> float:
+    return (
+        (float(first.X) - float(second.X)) ** 2
+        + (float(first.Y) - float(second.Y)) ** 2
+        + (float(first.Z) - float(second.Z)) ** 2
+    ) ** 0.5
+
+
+def _point_tuple(point: Any) -> tuple[float, float, float]:
+    return (float(point.X), float(point.Y), float(point.Z))
+
+
+def _midpoint_tuple(first: Any, second: Any) -> tuple[float, float, float]:
+    return (
+        (float(first.X) + float(second.X)) / 2.0,
+        (float(first.Y) + float(second.Y)) / 2.0,
+        (float(first.Z) + float(second.Z)) / 2.0,
+    )
+
+
+def _bbox_center_tuple(bbox: Any) -> tuple[float, float, float]:
+    return _point_tuple(bbox.Center)
+
+
+def _accepts_get_bounding_box_bool(geometry: Any) -> bool:
+    try:
+        geometry.GetBoundingBox(True)
+    except TypeError:
+        return False
+    return True
+
+
+def _set_document_unit_system(Rhino: Any, doc: Any, target_unit_system: str) -> None:
+    unit_system = _rhino_unit_system(Rhino, target_unit_system)
+    if hasattr(doc, "AdjustModelUnitSystem"):
+        doc.AdjustModelUnitSystem(unit_system, False)
+        return
+    doc.ModelUnitSystem = unit_system
+
+
+def _set_file_unit_system(Rhino: Any, file3dm: Any, target_unit_system: str) -> None:
+    file3dm.Settings.ModelUnitSystem = _rhino_unit_system(Rhino, target_unit_system)
+
+
+def _rhino_unit_system(Rhino: Any, target_unit_system: str) -> Any:
+    if target_unit_system == "Meters":
+        return Rhino.UnitSystem.Meters
+    raise ValueError(f"Unsupported Rhino unit system: {target_unit_system!r}.")
+
+
 def _model_tolerance(Rhino: Any) -> float:
     active_doc = Rhino.RhinoDoc.ActiveDoc
     if active_doc is None:
         return 0.001
     return active_doc.ModelAbsoluteTolerance
+
+
+def _model_angle_tolerance(Rhino: Any) -> float:
+    active_doc = Rhino.RhinoDoc.ActiveDoc
+    if active_doc is None:
+        return 0.017453292519943295
+    return active_doc.ModelAngleToleranceRadians
 
 
 def _adjacent_pairs(points: tuple[ProfilePoint, ...]) -> tuple[tuple[ProfilePoint, ProfilePoint], ...]:

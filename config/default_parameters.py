@@ -23,13 +23,13 @@ DEFAULT_DAM_PARAMETERS = DamParameters(
         (120.0, 110.0),
     ),
     construction_stage_top_elevations=(
-        110.0,
-        120.0,
+        107.0,
+        115.0,
         130.0,
         140.0,
-        150.0,
-        160.0,
-        170.0,
+        155.0,
+        165.0,
+        172.0,
         180.0,
     ),
     terrain_boundary=TerrainBoundary(

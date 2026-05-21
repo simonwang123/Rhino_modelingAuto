@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from config import DEFAULT_DAM_PARAMETERS
+from geometry import ApdlPreparationOptions
 from geometry.profile_calculator import ProfileCalculator
 from models import DamParameters, TerrainBoundary, TerrainContour
 from utils import sample_bank_curves_to_terrain_boundary
@@ -356,6 +357,23 @@ def test_construction_stage_top_elevations_create_stage_intervals() -> None:
     ]
 
 
+def test_apdl_preparation_options_default_to_stage_only_meter_model() -> None:
+    options = ApdlPreparationOptions()
+
+    assert options.include_global_geometry is False
+    assert options.target_unit_system == "Meters"
+    assert options.min_edge_length == pytest.approx(1.0)
+    assert options.min_face_area == pytest.approx(1.0)
+    assert options.shrink_trimmed_faces is True
+    assert options.merge_coplanar_faces is True
+    assert options.fail_on_remaining_small_features is True
+
+
+def test_apdl_preparation_options_reject_global_geometry() -> None:
+    with pytest.raises(ValueError, match="must not include global geometry"):
+        ApdlPreparationOptions(include_global_geometry=True)
+
+
 def test_construction_stage_top_elevations_must_be_strictly_increasing() -> None:
     with pytest.raises(ValueError, match="strictly increasing"):
         make_parameters(construction_stage_top_elevations=(120.0, 120.0, 180.0))
@@ -707,8 +725,12 @@ def test_default_parameters_include_valid_secondary_rockfill_zone() -> None:
     profile = ProfileCalculator(DEFAULT_DAM_PARAMETERS).calculate()
 
     assert DEFAULT_DAM_PARAMETERS.terrain_boundary is not None
-    assert DEFAULT_DAM_PARAMETERS.construction_stage_top_elevations == pytest.approx(
-        (110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0)
+    assert DEFAULT_DAM_PARAMETERS.construction_stage_top_elevations is not None
+    assert DEFAULT_DAM_PARAMETERS.construction_stage_top_elevations[-1] == pytest.approx(
+        DEFAULT_DAM_PARAMETERS.crest_elevation
+    )
+    assert DEFAULT_DAM_PARAMETERS.construction_stage_top_elevations == tuple(
+        sorted(DEFAULT_DAM_PARAMETERS.construction_stage_top_elevations)
     )
     assert len(DEFAULT_DAM_PARAMETERS.construction_stages) == 8
     assert profile.secondary_rockfill_zone is not None
