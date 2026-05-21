@@ -17,10 +17,10 @@ construction, meshing, or numerical simulation.
 - `Y`: dam axis direction
 - `Z`: elevation
 
-The 2D dam profile is calculated in the `X-Z` plane and the 3D body extends
-from `Y=0` to `Y=axis_length`. Downstream benches are modeled as horizontal
-segments on the downstream profile; each sloped segment keeps the configured
-downstream slope ratio.
+The 2D dam profile is calculated in the `X-Z` plane and the regular 3D body
+extends from `Y=0` to `Y=axis_length`. Downstream benches are modeled as
+horizontal segments on the downstream profile; each sloped segment keeps the
+configured downstream slope ratio.
 
 Secondary rockfill zones are defined by four user-provided `(x, z)` section
 points. The zone is validated in the section plane, extruded along the dam axis,
@@ -36,6 +36,15 @@ slope, and the transition layer is adjacent to the cushion layer on the dam-body
 side. Both layers extend from the crest elevation to the foundation elevation,
 are extruded along the dam axis, and are subtracted from the primary rockfill
 body.
+
+Terrain-constrained modeling is optional. When a terrain boundary is provided,
+left-bank and right-bank contours control the dam abutment boundary along the
+`Y` dam-axis direction. CAD/IGES terrain contours are imported into Rhino first,
+then sampled from Rhino curves into parameter point lists. The finite contour
+set is lofted into continuous left and right bank surfaces plus top, bottom,
+upstream, and downstream closing surfaces. The resulting closed constraint Brep
+is intersected with the dam body and each material zone before the primary
+rockfill Brep is computed.
 
 ## Module Responsibilities
 
@@ -57,6 +66,9 @@ body.
 - Primary rockfill, secondary rockfill, cushion layer, and transition layer
   Breps are separated so later finite-element workflows can assign materials and
   meshes by zone.
+- `TerrainBoundary` stores sampled left and right bank contour point lists. Use
+  `utils.rhino_curve_sampling.sample_curve_to_terrain_contour` inside Rhino to
+  convert imported CAD/IGES curves into these parameters.
 - `MeshGenerator` is reserved for finite-element mesh generation.
 - `APDLExporter` is reserved for ANSYS/APDL command generation.
 - `KnowledgeDrivenModifier` is reserved for rule-based or LLM-based parameter

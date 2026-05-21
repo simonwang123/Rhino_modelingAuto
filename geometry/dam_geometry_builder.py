@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from geometry.profile_calculator import DamProfile, ProfileCalculator, ProfilePoint
-from models import DamParameters
+from models import DamParameters, TerrainBoundary, TerrainContour
 
 
 @dataclass(frozen=True)
@@ -105,6 +105,12 @@ class DamGeometryBuilder:
             raise RuntimeError("Primary rockfill Brep from boolean difference is invalid.")
         return primary
 
+    def build_terrain_constraint_brep(self) -> Any | None:
+        Rhino = _require_rhino()
+        if self.parameters.terrain_boundary is None:
+            return None
+        return self._build_terrain_constraint_brep(Rhino, self.parameters.terrain_boundary)
+
     def _build_section_brep(
         self,
         Rhino: Any,
@@ -143,10 +149,27 @@ class DamGeometryBuilder:
 
     def build(self) -> DamGeometry:
         upstream, downstream, crest = self.build_surfaces()
-        body = self.build_body_brep()
-        secondary = self.build_secondary_rockfill_brep()
-        cushion = self.build_cushion_layer_brep()
-        transition = self.build_transition_layer_brep()
+        terrain_constraint = self.build_terrain_constraint_brep()
+        body = self._clip_with_terrain_constraint(
+            self.build_body_brep(),
+            terrain_constraint,
+            "body_brep",
+        )
+        secondary = self._clip_optional_with_terrain_constraint(
+            self.build_secondary_rockfill_brep(),
+            terrain_constraint,
+            "secondary_rockfill_brep",
+        )
+        cushion = self._clip_optional_with_terrain_constraint(
+            self.build_cushion_layer_brep(),
+            terrain_constraint,
+            "cushion_layer_brep",
+        )
+        transition = self._clip_optional_with_terrain_constraint(
+            self.build_transition_layer_brep(),
+            terrain_constraint,
+            "transition_layer_brep",
+        )
         primary = self.build_primary_rockfill_brep(
             body,
             (secondary, cushion, transition),
@@ -273,9 +296,186 @@ class DamGeometryBuilder:
             raise RuntimeError("Failed to create a valid quad surface Brep.")
         return brep
 
+    def _build_terrain_constraint_brep(
+        self,
+        Rhino: Any,
+        terrain_boundary: TerrainBoundary,
+    ) -> Any:
+        tolerance = _model_tolerance(Rhino)
+        left_surface = self._build_terrain_loft_surface(
+            Rhino,
+            terrain_boundary.left_bank_contours,
+            "left bank terrain surface",
+        )
+        right_surface = self._build_terrain_loft_surface(
+            Rhino,
+            terrain_boundary.right_bank_contours,
+            "right bank terrain surface",
+        )
+        bottom_surface = self._build_loft_between_contours(
+            Rhino,
+            terrain_boundary.left_bank_contours[0],
+            terrain_boundary.right_bank_contours[0],
+            "bottom terrain boundary surface",
+        )
+        top_surface = self._build_loft_between_contours(
+            Rhino,
+            terrain_boundary.left_bank_contours[-1],
+            terrain_boundary.right_bank_contours[-1],
+            "top terrain boundary surface",
+        )
+        upstream_surface = self._build_cross_bank_surface(
+            Rhino,
+            terrain_boundary,
+            0,
+            "upstream terrain boundary surface",
+        )
+        downstream_surface = self._build_cross_bank_surface(
+            Rhino,
+            terrain_boundary,
+            -1,
+            "downstream terrain boundary surface",
+        )
+
+        joined = Rhino.Geometry.Brep.JoinBreps(
+            [
+                left_surface,
+                right_surface,
+                bottom_surface,
+                top_surface,
+                upstream_surface,
+                downstream_surface,
+            ],
+            tolerance,
+        )
+        if not joined:
+            raise RuntimeError("Failed to join terrain boundary surfaces into a Brep.")
+        terrain_brep = joined[0]
+        if terrain_brep is None or not terrain_brep.IsValid:
+            raise RuntimeError("Terrain constraint Brep is invalid.")
+        if hasattr(terrain_brep, "IsSolid") and not terrain_brep.IsSolid:
+            raise RuntimeError("Terrain constraint Brep is not a closed solid.")
+        return terrain_brep
+
+    def _build_terrain_loft_surface(
+        self,
+        Rhino: Any,
+        contours: tuple[TerrainContour, ...],
+        label: str,
+    ) -> Any:
+        curves = [self._build_terrain_polyline_curve(Rhino, contour) for contour in contours]
+        return self._create_single_loft_brep(Rhino, curves, label)
+
+    def _build_loft_between_contours(
+        self,
+        Rhino: Any,
+        first: TerrainContour,
+        second: TerrainContour,
+        label: str,
+    ) -> Any:
+        curves = [
+            self._build_terrain_polyline_curve(Rhino, first),
+            self._build_terrain_polyline_curve(Rhino, second),
+        ]
+        return self._create_single_loft_brep(Rhino, curves, label)
+
+    def _build_cross_bank_surface(
+        self,
+        Rhino: Any,
+        terrain_boundary: TerrainBoundary,
+        point_index: int,
+        label: str,
+    ) -> Any:
+        curves = []
+        for left, right in zip(
+            terrain_boundary.left_bank_contours,
+            terrain_boundary.right_bank_contours,
+        ):
+            curves.append(
+                Rhino.Geometry.PolylineCurve(
+                    [
+                        _to_point3d_tuple(Rhino, left.points[point_index]),
+                        _to_point3d_tuple(Rhino, right.points[point_index]),
+                    ]
+                )
+            )
+        return self._create_single_loft_brep(Rhino, curves, label)
+
+    def _create_single_loft_brep(
+        self,
+        Rhino: Any,
+        curves: list[Any],
+        label: str,
+    ) -> Any:
+        breps = Rhino.Geometry.Brep.CreateFromLoft(
+            curves,
+            Rhino.Geometry.Point3d.Unset,
+            Rhino.Geometry.Point3d.Unset,
+            Rhino.Geometry.LoftType.Normal,
+            False,
+        )
+        if not breps:
+            raise RuntimeError(f"Failed to create {label} from terrain contours.")
+        brep = breps[0]
+        if brep is None or not brep.IsValid:
+            raise RuntimeError(f"{label} from terrain contours is invalid.")
+        return brep
+
+    def _build_terrain_polyline_curve(
+        self,
+        Rhino: Any,
+        contour: TerrainContour,
+    ) -> Any:
+        return Rhino.Geometry.PolylineCurve(
+            [_to_point3d_tuple(Rhino, point) for point in contour.points]
+        )
+
+    def _clip_optional_with_terrain_constraint(
+        self,
+        brep: Any | None,
+        terrain_constraint: Any | None,
+        label: str,
+    ) -> Any | None:
+        if brep is None:
+            return None
+        return self._clip_with_terrain_constraint(brep, terrain_constraint, label)
+
+    def _clip_with_terrain_constraint(
+        self,
+        brep: Any,
+        terrain_constraint: Any | None,
+        label: str,
+    ) -> Any:
+        if terrain_constraint is None:
+            return brep
+
+        Rhino = _require_rhino()
+        tolerance = _model_tolerance(Rhino)
+        target = brep.DuplicateBrep() if hasattr(brep, "DuplicateBrep") else brep
+        constraint = (
+            terrain_constraint.DuplicateBrep()
+            if hasattr(terrain_constraint, "DuplicateBrep")
+            else terrain_constraint
+        )
+        intersections = Rhino.Geometry.Brep.CreateBooleanIntersection(
+            [target],
+            [constraint],
+            tolerance,
+        )
+        if not intersections:
+            raise RuntimeError(f"Terrain clipping produced no valid {label}.")
+        clipped = intersections[0]
+        if clipped is None or not clipped.IsValid:
+            raise RuntimeError(f"Terrain-clipped {label} is invalid.")
+        return clipped
+
 
 def _to_point3d(Rhino: Any, point: ProfilePoint) -> Any:
     return Rhino.Geometry.Point3d(point.x, point.y, point.z)
+
+
+def _to_point3d_tuple(Rhino: Any, point: tuple[float, float, float]) -> Any:
+    return Rhino.Geometry.Point3d(point[0], point[1], point[2])
 
 
 def _model_tolerance(Rhino: Any) -> float:

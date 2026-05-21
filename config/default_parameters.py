@@ -1,4 +1,4 @@
-from models import DamParameters
+from models import DamParameters, TerrainBoundary, TerrainContour
 
 
 DEFAULT_DAM_PARAMETERS = DamParameters(
@@ -21,5 +21,28 @@ DEFAULT_DAM_PARAMETERS = DamParameters(
         (70.0, 150.0),
         (160.0, 110.0),
         (120.0, 110.0),
+    ),
+    terrain_boundary=TerrainBoundary(
+        left_bank_contours=(
+            TerrainContour(
+                elevation=100.0,
+                points=((-205.0, 0.0, 100.0), (180.0, 0.0, 100.0)),
+            ),
+            TerrainContour(
+                elevation=180.0,
+                points=((-5.0, 0.0, 180.0), (5.0, 0.0, 180.0)),
+            ),
+        ),
+        right_bank_contours=(
+            TerrainContour(
+                elevation=100.0,
+                points=((-205.0, 300.0, 100.0), (180.0, 300.0, 100.0)),
+            ),
+            TerrainContour(
+                elevation=180.0,
+                points=((-5.0, 300.0, 180.0), (5.0, 300.0, 180.0)),
+            ),
+        ),
+        sample_interval=10.0,
     ),
 )

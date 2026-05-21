@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from math import isclose
 from typing import Optional
 
+from .terrain_boundary import TerrainBoundary
+
 
 @dataclass(frozen=True)
 class DamParameters:
@@ -24,6 +26,7 @@ class DamParameters:
     bench_elevations: Optional[tuple[float, ...]] = None
     bench_width: float = 0.0
     secondary_rockfill_points: Optional[tuple[tuple[float, float], ...]] = None
+    terrain_boundary: Optional[TerrainBoundary] = None
 
     ELEVATION_TOLERANCE = 1e-6
 
@@ -48,6 +51,7 @@ class DamParameters:
             raise ValueError("bench_width must be 0 when bench_count is 0.")
 
         self._validate_upstream_layer_thicknesses()
+        self._validate_terrain_boundary()
 
         normalized_elevations = self._normalized_bench_elevations()
         object.__setattr__(self, "bench_elevations", normalized_elevations)
@@ -144,6 +148,38 @@ class DamParameters:
         )
         if transition_enabled and not cushion_enabled:
             raise ValueError("transition_layer requires cushion_layer to be enabled.")
+
+    def _validate_terrain_boundary(self) -> None:
+        if self.terrain_boundary is None:
+            return
+
+        elevations = self.terrain_boundary.elevations
+        if not isclose(
+            elevations[0],
+            self.foundation_elevation,
+            rel_tol=0.0,
+            abs_tol=self.ELEVATION_TOLERANCE,
+        ):
+            raise ValueError(
+                "terrain_boundary lowest elevation must equal foundation_elevation."
+            )
+        if not isclose(
+            elevations[-1],
+            self.crest_elevation,
+            rel_tol=0.0,
+            abs_tol=self.ELEVATION_TOLERANCE,
+        ):
+            raise ValueError("terrain_boundary highest elevation must equal crest_elevation.")
+
+        for contour in (
+            *self.terrain_boundary.left_bank_contours,
+            *self.terrain_boundary.right_bank_contours,
+        ):
+            for point in contour.points:
+                if not 0.0 <= point[1] <= self.axis_length:
+                    raise ValueError(
+                        "terrain_boundary point y values must be within the dam axis length."
+                    )
 
     @staticmethod
     def _layer_thickness_pair_enabled(

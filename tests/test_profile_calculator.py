@@ -4,7 +4,7 @@ import pytest
 
 from config import DEFAULT_DAM_PARAMETERS
 from geometry.profile_calculator import ProfileCalculator
-from models import DamParameters
+from models import DamParameters, TerrainBoundary, TerrainContour
 
 
 def make_parameters(**overrides: object) -> DamParameters:
@@ -21,10 +21,39 @@ def make_parameters(**overrides: object) -> DamParameters:
     return DamParameters(**values)
 
 
+def make_terrain_boundary(**overrides: object) -> TerrainBoundary:
+    values = {
+        "left_bank_contours": (
+            TerrainContour(
+                elevation=100.0,
+                points=((-205.0, 0.0, 100.0), (180.0, 0.0, 100.0)),
+            ),
+            TerrainContour(
+                elevation=180.0,
+                points=((-5.0, 0.0, 180.0), (5.0, 0.0, 180.0)),
+            ),
+        ),
+        "right_bank_contours": (
+            TerrainContour(
+                elevation=100.0,
+                points=((-205.0, 300.0, 100.0), (180.0, 300.0, 100.0)),
+            ),
+            TerrainContour(
+                elevation=180.0,
+                points=((-5.0, 300.0, 180.0), (5.0, 300.0, 180.0)),
+            ),
+        ),
+        "sample_interval": 10.0,
+    }
+    values.update(overrides)
+    return TerrainBoundary(**values)
+
+
 def test_valid_parameters_are_accepted() -> None:
     parameters = make_parameters()
 
     assert parameters.calculated_height == pytest.approx(80.0)
+    assert parameters.terrain_boundary is None
 
 
 def test_height_must_match_elevation_difference() -> None:
@@ -161,6 +190,126 @@ def test_secondary_rockfill_is_absent_by_default() -> None:
     profile = ProfileCalculator(make_parameters()).calculate()
 
     assert profile.secondary_rockfill_zone is None
+
+
+def test_terrain_boundary_is_accepted_when_it_matches_dam_elevations() -> None:
+    parameters = make_parameters(terrain_boundary=make_terrain_boundary())
+
+    assert parameters.terrain_boundary is not None
+    assert parameters.terrain_boundary.elevations == pytest.approx((100.0, 180.0))
+
+
+def test_terrain_boundary_requires_at_least_two_contours_per_bank() -> None:
+    with pytest.raises(ValueError, match="left_bank_contours"):
+        make_terrain_boundary(
+            left_bank_contours=(
+                TerrainContour(
+                    elevation=100.0,
+                    points=((-205.0, 0.0, 100.0), (180.0, 0.0, 100.0)),
+                ),
+            )
+        )
+
+
+def test_terrain_boundary_requires_matching_bank_elevations() -> None:
+    with pytest.raises(ValueError, match="same elevations"):
+        make_terrain_boundary(
+            right_bank_contours=(
+                TerrainContour(
+                    elevation=100.0,
+                    points=((-205.0, 300.0, 100.0), (180.0, 300.0, 100.0)),
+                ),
+                TerrainContour(
+                    elevation=170.0,
+                    points=((-30.0, 300.0, 170.0), (30.0, 300.0, 170.0)),
+                ),
+            )
+        )
+
+
+def test_terrain_contour_requires_at_least_two_points() -> None:
+    with pytest.raises(ValueError, match="at least 2 points"):
+        TerrainContour(elevation=100.0, points=((0.0, 0.0, 100.0),))
+
+
+def test_terrain_contour_points_must_match_elevation() -> None:
+    with pytest.raises(ValueError, match="match the contour elevation"):
+        TerrainContour(
+            elevation=100.0,
+            points=((0.0, 0.0, 100.0), (1.0, 0.0, 101.0)),
+        )
+
+
+def test_terrain_boundary_left_bank_must_precede_right_bank_along_y() -> None:
+    with pytest.raises(ValueError, match="before right_bank_contours"):
+        make_terrain_boundary(
+            left_bank_contours=(
+                TerrainContour(
+                    elevation=100.0,
+                    points=((-205.0, 300.0, 100.0), (180.0, 300.0, 100.0)),
+                ),
+                TerrainContour(
+                    elevation=180.0,
+                    points=((-5.0, 300.0, 180.0), (5.0, 300.0, 180.0)),
+                ),
+            ),
+            right_bank_contours=(
+                TerrainContour(
+                    elevation=100.0,
+                    points=((-205.0, 0.0, 100.0), (180.0, 0.0, 100.0)),
+                ),
+                TerrainContour(
+                    elevation=180.0,
+                    points=((-5.0, 0.0, 180.0), (5.0, 0.0, 180.0)),
+                ),
+            ),
+        )
+
+
+def test_terrain_boundary_must_span_foundation_to_crest_elevations() -> None:
+    with pytest.raises(ValueError, match="lowest elevation"):
+        make_parameters(
+            terrain_boundary=make_terrain_boundary(
+                left_bank_contours=(
+                    TerrainContour(
+                        elevation=110.0,
+                        points=((-180.0, 0.0, 110.0), (160.0, 0.0, 110.0)),
+                    ),
+                    TerrainContour(
+                        elevation=180.0,
+                        points=((-5.0, 0.0, 180.0), (5.0, 0.0, 180.0)),
+                    ),
+                ),
+                right_bank_contours=(
+                    TerrainContour(
+                        elevation=110.0,
+                        points=((-180.0, 300.0, 110.0), (160.0, 300.0, 110.0)),
+                    ),
+                    TerrainContour(
+                        elevation=180.0,
+                        points=((-5.0, 300.0, 180.0), (5.0, 300.0, 180.0)),
+                    ),
+                ),
+            )
+        )
+
+
+def test_terrain_boundary_points_must_stay_within_axis_length() -> None:
+    with pytest.raises(ValueError, match="within the dam axis length"):
+        make_parameters(
+            terrain_boundary=make_terrain_boundary(
+                right_bank_contours=(
+                    TerrainContour(
+                        elevation=100.0,
+                        points=((-205.0, 310.0, 100.0), (180.0, 310.0, 100.0)),
+                    ),
+                    TerrainContour(
+                        elevation=180.0,
+                        points=((-5.0, 310.0, 180.0), (5.0, 310.0, 180.0)),
+                    ),
+                )
+            )
+        )
 
 
 def test_cushion_layer_points_are_calculated_from_horizontal_thicknesses() -> None:
@@ -493,6 +642,7 @@ def test_secondary_rockfill_right_side_must_not_extend_outside_downstream_bounda
 def test_default_parameters_include_valid_secondary_rockfill_zone() -> None:
     profile = ProfileCalculator(DEFAULT_DAM_PARAMETERS).calculate()
 
+    assert DEFAULT_DAM_PARAMETERS.terrain_boundary is not None
     assert profile.secondary_rockfill_zone is not None
     assert profile.cushion_layer is not None
     assert profile.transition_layer is not None
