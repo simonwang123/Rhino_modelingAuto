@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from math import isclose
 from typing import Optional
 
+from .construction_stage import ConstructionStage
 from .terrain_boundary import TerrainBoundary
 
 
@@ -27,6 +28,7 @@ class DamParameters:
     bench_width: float = 0.0
     secondary_rockfill_points: Optional[tuple[tuple[float, float], ...]] = None
     terrain_boundary: Optional[TerrainBoundary] = None
+    construction_stage_top_elevations: Optional[tuple[float, ...]] = None
 
     ELEVATION_TOLERANCE = 1e-6
 
@@ -51,8 +53,6 @@ class DamParameters:
             raise ValueError("bench_width must be 0 when bench_count is 0.")
 
         self._validate_upstream_layer_thicknesses()
-        self._validate_terrain_boundary()
-
         normalized_elevations = self._normalized_bench_elevations()
         object.__setattr__(self, "bench_elevations", normalized_elevations)
 
@@ -68,6 +68,14 @@ class DamParameters:
                 f"within {self.ELEVATION_TOLERANCE}; got {elevation_height!r}."
             )
 
+        self._validate_terrain_boundary()
+        normalized_stage_elevations = self._normalized_construction_stage_top_elevations()
+        object.__setattr__(
+            self,
+            "construction_stage_top_elevations",
+            normalized_stage_elevations,
+        )
+
         normalized_secondary_points = self._normalized_secondary_rockfill_points()
         object.__setattr__(
             self,
@@ -78,6 +86,27 @@ class DamParameters:
     @property
     def calculated_height(self) -> float:
         return self.crest_elevation - self.foundation_elevation
+
+    @property
+    def construction_stages(self) -> tuple[ConstructionStage, ...]:
+        if self.construction_stage_top_elevations is None:
+            return ()
+
+        stages: list[ConstructionStage] = []
+        bottom_elevation = self.foundation_elevation
+        for index, top_elevation in enumerate(
+            self.construction_stage_top_elevations,
+            start=1,
+        ):
+            stages.append(
+                ConstructionStage(
+                    stage_index=index,
+                    bottom_elevation=bottom_elevation,
+                    top_elevation=top_elevation,
+                )
+            )
+            bottom_elevation = top_elevation
+        return tuple(stages)
 
     def _normalized_bench_elevations(self) -> tuple[float, ...]:
         if self.bench_count == 0:
@@ -180,6 +209,43 @@ class DamParameters:
                     raise ValueError(
                         "terrain_boundary point y values must be within the dam axis length."
                     )
+
+    def _normalized_construction_stage_top_elevations(
+        self,
+    ) -> Optional[tuple[float, ...]]:
+        if self.construction_stage_top_elevations in (None, ()):
+            return None
+
+        normalized_elevations = tuple(
+            float(elevation) for elevation in self.construction_stage_top_elevations
+        )
+        previous_elevation = self.foundation_elevation
+        for elevation in normalized_elevations:
+            if elevation <= self.foundation_elevation:
+                raise ValueError(
+                    "construction_stage_top_elevations must be greater than "
+                    "foundation_elevation."
+                )
+            if elevation > self.crest_elevation:
+                raise ValueError(
+                    "construction_stage_top_elevations must not exceed crest_elevation."
+                )
+            if elevation <= previous_elevation:
+                raise ValueError(
+                    "construction_stage_top_elevations must be strictly increasing."
+                )
+            previous_elevation = elevation
+
+        if not isclose(
+            normalized_elevations[-1],
+            self.crest_elevation,
+            rel_tol=0.0,
+            abs_tol=self.ELEVATION_TOLERANCE,
+        ):
+            raise ValueError(
+                "construction_stage_top_elevations last value must equal crest_elevation."
+            )
+        return normalized_elevations
 
     @staticmethod
     def _layer_thickness_pair_enabled(

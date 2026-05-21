@@ -4,7 +4,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from geometry.profile_calculator import DamProfile, ProfileCalculator, ProfilePoint
-from models import DamParameters, TerrainBoundary, TerrainContour
+from models import ConstructionStage, DamParameters, TerrainBoundary, TerrainContour
+
+
+@dataclass(frozen=True)
+class ConstructionStagePart:
+    zone_name: str
+    breps: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class ConstructionStageGeometry:
+    stage: ConstructionStage
+    parts: tuple[ConstructionStagePart, ...]
 
 
 @dataclass(frozen=True)
@@ -19,6 +31,7 @@ class DamGeometry:
     upstream_slope_surface: Any | None
     downstream_surfaces: tuple[Any, ...]
     crest_platform_surface: Any | None
+    construction_stages: tuple[ConstructionStageGeometry, ...]
 
 
 class DamGeometryBuilder:
@@ -105,6 +118,35 @@ class DamGeometryBuilder:
             raise RuntimeError("Primary rockfill Brep from boolean difference is invalid.")
         return primary
 
+    def build_construction_stage_geometries(
+        self,
+        zone_breps: tuple[tuple[str, Any | None], ...],
+    ) -> tuple[ConstructionStageGeometry, ...]:
+        if not self.parameters.construction_stages:
+            return ()
+
+        Rhino = _require_rhino()
+        stage_geometries: list[ConstructionStageGeometry] = []
+        for stage in self.parameters.construction_stages:
+            slab_brep = self._build_stage_slab_brep(Rhino, stage)
+            parts: list[ConstructionStagePart] = []
+            for zone_name, zone_brep in zone_breps:
+                if zone_brep is None:
+                    continue
+                breps = self._intersect_zone_with_stage_slab(
+                    zone_brep,
+                    slab_brep,
+                    zone_name,
+                    stage,
+                )
+                if breps:
+                    parts.append(ConstructionStagePart(zone_name=zone_name, breps=breps))
+            if parts:
+                stage_geometries.append(
+                    ConstructionStageGeometry(stage=stage, parts=tuple(parts))
+                )
+        return tuple(stage_geometries)
+
     def build_terrain_constraint_brep(self) -> Any | None:
         Rhino = _require_rhino()
         if self.parameters.terrain_boundary is None:
@@ -177,6 +219,14 @@ class DamGeometryBuilder:
             body,
             (secondary, cushion, transition),
         )
+        construction_stages = self.build_construction_stage_geometries(
+            (
+                ("primary_rockfill", primary),
+                ("secondary_rockfill", secondary),
+                ("cushion_layer", cushion),
+                ("transition_layer", transition),
+            )
+        )
         return DamGeometry(
             profile_curve=None if has_terrain_boundary else self.build_profile_curve(),
             body_brep=body,
@@ -192,6 +242,7 @@ class DamGeometryBuilder:
             upstream_slope_surface=upstream,
             downstream_surfaces=downstream,
             crest_platform_surface=crest,
+            construction_stages=construction_stages,
         )
 
     def add_to_document(self, doc: Any | None = None) -> dict[str, Any]:
@@ -238,6 +289,11 @@ class DamGeometryBuilder:
             object_ids[f"downstream_surface_{index}"] = doc.Objects.AddBrep(
                 downstream_surface
             )
+        for stage_geometry in geometry.construction_stages:
+            for part in stage_geometry.parts:
+                object_ids.update(
+                    self._add_stage_part_to_document(doc, stage_geometry.stage, part)
+                )
         doc.Views.Redraw()
         return object_ids
 
@@ -483,6 +539,141 @@ class DamGeometryBuilder:
             raise RuntimeError(f"Terrain-clipped {label} is invalid.")
         return clipped
 
+    def _build_stage_slab_brep(
+        self,
+        Rhino: Any,
+        stage: ConstructionStage,
+    ) -> Any:
+        x_min, x_max, y_min, y_max = self._stage_slab_plan_bounds()
+        return self._build_box_brep(
+            Rhino,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+            stage.bottom_elevation,
+            stage.top_elevation,
+            f"construction stage {stage.stage_index} slab",
+        )
+
+    def _stage_slab_plan_bounds(self) -> tuple[float, float, float, float]:
+        points: list[tuple[float, float, float]] = []
+        points.extend(point.as_tuple() for point in self.profile.points())
+        if self.profile.secondary_rockfill_zone is not None:
+            points.extend(
+                point.as_tuple()
+                for point in self.profile.secondary_rockfill_zone.boundary_points()
+            )
+        if self.profile.cushion_layer is not None:
+            points.extend(point.as_tuple() for point in self.profile.cushion_layer.points)
+        if self.profile.transition_layer is not None:
+            points.extend(point.as_tuple() for point in self.profile.transition_layer.points)
+        if self.parameters.terrain_boundary is not None:
+            for contour in (
+                *self.parameters.terrain_boundary.left_bank_contours,
+                *self.parameters.terrain_boundary.right_bank_contours,
+            ):
+                points.extend(contour.points)
+
+        x_values = [point[0] for point in points]
+        y_values = [point[1] for point in points]
+        x_min, x_max = min(x_values), max(x_values)
+        y_min, y_max = min(0.0, *y_values), max(self.parameters.axis_length, *y_values)
+        x_padding = max((x_max - x_min) * 0.05, 10.0)
+        y_padding = max((y_max - y_min) * 0.05, 10.0)
+        return (
+            x_min - x_padding,
+            x_max + x_padding,
+            y_min - y_padding,
+            y_max + y_padding,
+        )
+
+    def _build_box_brep(
+        self,
+        Rhino: Any,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+        z_min: float,
+        z_max: float,
+        label: str,
+    ) -> Any:
+        tolerance = _model_tolerance(Rhino)
+        p000 = Rhino.Geometry.Point3d(x_min, y_min, z_min)
+        p100 = Rhino.Geometry.Point3d(x_max, y_min, z_min)
+        p110 = Rhino.Geometry.Point3d(x_max, y_max, z_min)
+        p010 = Rhino.Geometry.Point3d(x_min, y_max, z_min)
+        p001 = Rhino.Geometry.Point3d(x_min, y_min, z_max)
+        p101 = Rhino.Geometry.Point3d(x_max, y_min, z_max)
+        p111 = Rhino.Geometry.Point3d(x_max, y_max, z_max)
+        p011 = Rhino.Geometry.Point3d(x_min, y_max, z_max)
+
+        faces = (
+            Rhino.Geometry.Brep.CreateFromCornerPoints(p000, p100, p110, p010, tolerance),
+            Rhino.Geometry.Brep.CreateFromCornerPoints(p001, p011, p111, p101, tolerance),
+            Rhino.Geometry.Brep.CreateFromCornerPoints(p000, p001, p101, p100, tolerance),
+            Rhino.Geometry.Brep.CreateFromCornerPoints(p100, p101, p111, p110, tolerance),
+            Rhino.Geometry.Brep.CreateFromCornerPoints(p110, p111, p011, p010, tolerance),
+            Rhino.Geometry.Brep.CreateFromCornerPoints(p010, p011, p001, p000, tolerance),
+        )
+        if any(face is None or not face.IsValid for face in faces):
+            raise RuntimeError(f"Failed to create valid faces for {label}.")
+
+        joined = Rhino.Geometry.Brep.JoinBreps(faces, tolerance)
+        if not joined:
+            raise RuntimeError(f"Failed to join {label} into a Brep.")
+        box_brep = joined[0]
+        if box_brep is None or not box_brep.IsValid:
+            raise RuntimeError(f"{label} Brep is invalid.")
+        if hasattr(box_brep, "IsSolid") and not box_brep.IsSolid:
+            raise RuntimeError(f"{label} Brep is not a closed solid.")
+        return box_brep
+
+    def _intersect_zone_with_stage_slab(
+        self,
+        zone_brep: Any,
+        slab_brep: Any,
+        zone_name: str,
+        stage: ConstructionStage,
+    ) -> tuple[Any, ...]:
+        Rhino = _require_rhino()
+        tolerance = _model_tolerance(Rhino)
+        zone = zone_brep.DuplicateBrep() if hasattr(zone_brep, "DuplicateBrep") else zone_brep
+        slab = slab_brep.DuplicateBrep() if hasattr(slab_brep, "DuplicateBrep") else slab_brep
+        intersections = Rhino.Geometry.Brep.CreateBooleanIntersection(
+            [zone],
+            [slab],
+            tolerance,
+        )
+        if not intersections:
+            return ()
+
+        valid_breps = tuple(brep for brep in intersections if brep is not None and brep.IsValid)
+        if len(valid_breps) != len(intersections):
+            raise RuntimeError(
+                f"Construction stage {stage.stage_index} produced invalid {zone_name} Brep."
+            )
+        return valid_breps
+
+    def _add_stage_part_to_document(
+        self,
+        doc: Any,
+        stage: ConstructionStage,
+        part: ConstructionStagePart,
+    ) -> dict[str, Any]:
+        object_ids: dict[str, Any] = {}
+        base_name = _stage_part_name(stage, part.zone_name)
+        for index, brep in enumerate(part.breps, start=1):
+            name = base_name if len(part.breps) == 1 else f"{base_name}__part_{index:02d}"
+            object_id = doc.Objects.AddBrep(brep)
+            rhino_object = doc.Objects.FindId(object_id)
+            if rhino_object is not None:
+                rhino_object.Attributes.Name = name
+                rhino_object.CommitChanges()
+            object_ids[name] = object_id
+        return object_ids
+
 
 def _to_point3d(Rhino: Any, point: ProfilePoint) -> Any:
     return Rhino.Geometry.Point3d(point.x, point.y, point.z)
@@ -490,6 +681,17 @@ def _to_point3d(Rhino: Any, point: ProfilePoint) -> Any:
 
 def _to_point3d_tuple(Rhino: Any, point: tuple[float, float, float]) -> Any:
     return Rhino.Geometry.Point3d(point[0], point[1], point[2])
+
+
+def _stage_part_name(stage: ConstructionStage, zone_name: str) -> str:
+    bottom = _format_elevation_for_name(stage.bottom_elevation)
+    top = _format_elevation_for_name(stage.top_elevation)
+    return f"stage_{stage.stage_index:02d}_{bottom}_{top}__{zone_name}"
+
+
+def _format_elevation_for_name(elevation: float) -> str:
+    text = f"{elevation:g}"
+    return text.replace("-", "minus_").replace(".", "p")
 
 
 def _model_tolerance(Rhino: Any) -> float:

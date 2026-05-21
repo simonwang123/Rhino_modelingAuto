@@ -55,6 +55,8 @@ def test_valid_parameters_are_accepted() -> None:
 
     assert parameters.calculated_height == pytest.approx(80.0)
     assert parameters.terrain_boundary is None
+    assert parameters.construction_stage_top_elevations is None
+    assert parameters.construction_stages == ()
 
 
 def test_height_must_match_elevation_difference() -> None:
@@ -333,6 +335,45 @@ def test_bank_curve_sampling_requires_matching_elevation_count() -> None:
             right_bank_curves=(),
             elevations=(100.0,),
         )
+
+
+def test_construction_stage_top_elevations_create_stage_intervals() -> None:
+    parameters = make_parameters(
+        construction_stage_top_elevations=(120.0, 150.0, 180.0)
+    )
+
+    assert [
+        (
+            stage.stage_index,
+            stage.bottom_elevation,
+            stage.top_elevation,
+        )
+        for stage in parameters.construction_stages
+    ] == [
+        (1, 100.0, 120.0),
+        (2, 120.0, 150.0),
+        (3, 150.0, 180.0),
+    ]
+
+
+def test_construction_stage_top_elevations_must_be_strictly_increasing() -> None:
+    with pytest.raises(ValueError, match="strictly increasing"):
+        make_parameters(construction_stage_top_elevations=(120.0, 120.0, 180.0))
+
+
+def test_construction_stage_top_elevations_must_be_above_foundation() -> None:
+    with pytest.raises(ValueError, match="greater than foundation_elevation"):
+        make_parameters(construction_stage_top_elevations=(100.0, 120.0, 180.0))
+
+
+def test_construction_stage_top_elevations_must_not_exceed_crest() -> None:
+    with pytest.raises(ValueError, match="must not exceed crest_elevation"):
+        make_parameters(construction_stage_top_elevations=(120.0, 190.0))
+
+
+def test_construction_stage_top_elevations_must_end_at_crest() -> None:
+    with pytest.raises(ValueError, match="last value must equal crest_elevation"):
+        make_parameters(construction_stage_top_elevations=(120.0, 160.0))
 
 
 def test_cushion_layer_points_are_calculated_from_horizontal_thicknesses() -> None:
@@ -666,6 +707,10 @@ def test_default_parameters_include_valid_secondary_rockfill_zone() -> None:
     profile = ProfileCalculator(DEFAULT_DAM_PARAMETERS).calculate()
 
     assert DEFAULT_DAM_PARAMETERS.terrain_boundary is not None
+    assert DEFAULT_DAM_PARAMETERS.construction_stage_top_elevations == pytest.approx(
+        (110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0)
+    )
+    assert len(DEFAULT_DAM_PARAMETERS.construction_stages) == 8
     assert profile.secondary_rockfill_zone is not None
     assert profile.cushion_layer is not None
     assert profile.transition_layer is not None

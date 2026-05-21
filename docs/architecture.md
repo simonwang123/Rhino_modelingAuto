@@ -46,6 +46,15 @@ upstream, and downstream closing surfaces. The resulting closed constraint Brep
 is intersected with the dam body and each material zone before the primary
 rockfill Brep is computed.
 
+Construction fill stages are optional and are defined by explicit top
+elevations. The foundation elevation is used as the first stage bottom, and the
+last top elevation must equal the crest elevation. Stage geometry is organized
+by construction stage first, with material-zone parts inside each stage. This
+keeps the model aligned with staged construction analysis: ANSYS/APDL export can
+activate `stage_03_120_130` as a construction step while still assigning
+different materials to its primary rockfill, secondary rockfill, cushion, and
+transition parts.
+
 ## Module Responsibilities
 
 - `models`: validated parameter data structures and future knowledge-driven
@@ -69,6 +78,9 @@ rockfill Brep is computed.
 - `TerrainBoundary` stores sampled left and right bank contour point lists. Use
   `utils.rhino_curve_sampling.sample_curve_to_terrain_contour` inside Rhino to
   convert imported CAD/IGES curves into these parameters.
+- `construction_stage_top_elevations` controls staged fill geometry. Rhino
+  objects are named with the stage as the primary key, for example
+  `stage_03_120_130__primary_rockfill`.
 - `MeshGenerator` is reserved for finite-element mesh generation.
 - `APDLExporter` is reserved for ANSYS/APDL command generation.
 - `KnowledgeDrivenModifier` is reserved for rule-based or LLM-based parameter
