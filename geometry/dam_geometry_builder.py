@@ -9,16 +9,16 @@ from models import DamParameters, TerrainBoundary, TerrainContour
 
 @dataclass(frozen=True)
 class DamGeometry:
-    profile_curve: Any
+    profile_curve: Any | None
     body_brep: Any
     primary_rockfill_brep: Any
     secondary_rockfill_brep: Any | None
     cushion_layer_brep: Any | None
     transition_layer_brep: Any | None
     secondary_rockfill_profile_curve: Any | None
-    upstream_slope_surface: Any
+    upstream_slope_surface: Any | None
     downstream_surfaces: tuple[Any, ...]
-    crest_platform_surface: Any
+    crest_platform_surface: Any | None
 
 
 class DamGeometryBuilder:
@@ -148,7 +148,10 @@ class DamGeometryBuilder:
         return upstream, downstream, crest
 
     def build(self) -> DamGeometry:
-        upstream, downstream, crest = self.build_surfaces()
+        has_terrain_boundary = self.parameters.terrain_boundary is not None
+        upstream, downstream, crest = (
+            (None, (), None) if has_terrain_boundary else self.build_surfaces()
+        )
         terrain_constraint = self.build_terrain_constraint_brep()
         body = self._clip_with_terrain_constraint(
             self.build_body_brep(),
@@ -175,13 +178,17 @@ class DamGeometryBuilder:
             (secondary, cushion, transition),
         )
         return DamGeometry(
-            profile_curve=self.build_profile_curve(),
+            profile_curve=None if has_terrain_boundary else self.build_profile_curve(),
             body_brep=body,
             primary_rockfill_brep=primary,
             secondary_rockfill_brep=secondary,
             cushion_layer_brep=cushion,
             transition_layer_brep=transition,
-            secondary_rockfill_profile_curve=self.build_secondary_rockfill_profile_curve(),
+            secondary_rockfill_profile_curve=(
+                None
+                if has_terrain_boundary
+                else self.build_secondary_rockfill_profile_curve()
+            ),
             upstream_slope_surface=upstream,
             downstream_surfaces=downstream,
             crest_platform_surface=crest,
@@ -196,14 +203,21 @@ class DamGeometryBuilder:
 
         geometry = self.build()
         object_ids = {
-            "profile_curve": doc.Objects.AddCurve(geometry.profile_curve),
             "body_brep": doc.Objects.AddBrep(geometry.body_brep),
             "primary_rockfill_brep": doc.Objects.AddBrep(
                 geometry.primary_rockfill_brep
             ),
-            "upstream_slope_surface": doc.Objects.AddBrep(geometry.upstream_slope_surface),
-            "crest_platform_surface": doc.Objects.AddBrep(geometry.crest_platform_surface),
         }
+        if geometry.profile_curve is not None:
+            object_ids["profile_curve"] = doc.Objects.AddCurve(geometry.profile_curve)
+        if geometry.upstream_slope_surface is not None:
+            object_ids["upstream_slope_surface"] = doc.Objects.AddBrep(
+                geometry.upstream_slope_surface
+            )
+        if geometry.crest_platform_surface is not None:
+            object_ids["crest_platform_surface"] = doc.Objects.AddBrep(
+                geometry.crest_platform_surface
+            )
         if geometry.secondary_rockfill_brep is not None:
             object_ids["secondary_rockfill_brep"] = doc.Objects.AddBrep(
                 geometry.secondary_rockfill_brep

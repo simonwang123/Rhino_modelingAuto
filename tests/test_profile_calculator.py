@@ -5,6 +5,7 @@ import pytest
 from config import DEFAULT_DAM_PARAMETERS
 from geometry.profile_calculator import ProfileCalculator
 from models import DamParameters, TerrainBoundary, TerrainContour
+from utils import sample_bank_curves_to_terrain_boundary
 
 
 def make_parameters(**overrides: object) -> DamParameters:
@@ -199,6 +200,19 @@ def test_terrain_boundary_is_accepted_when_it_matches_dam_elevations() -> None:
     assert parameters.terrain_boundary.elevations == pytest.approx((100.0, 180.0))
 
 
+def test_default_terrain_boundary_uses_polyline_contours() -> None:
+    assert DEFAULT_DAM_PARAMETERS.terrain_boundary is not None
+
+    terrain_boundary = DEFAULT_DAM_PARAMETERS.terrain_boundary
+    assert all(
+        len(contour.points) > 2
+        for contour in (
+            *terrain_boundary.left_bank_contours,
+            *terrain_boundary.right_bank_contours,
+        )
+    )
+
+
 def test_terrain_boundary_requires_at_least_two_contours_per_bank() -> None:
     with pytest.raises(ValueError, match="left_bank_contours"):
         make_terrain_boundary(
@@ -309,6 +323,15 @@ def test_terrain_boundary_points_must_stay_within_axis_length() -> None:
                     ),
                 )
             )
+        )
+
+
+def test_bank_curve_sampling_requires_matching_elevation_count() -> None:
+    with pytest.raises(ValueError, match="left_bank_curves length"):
+        sample_bank_curves_to_terrain_boundary(
+            left_bank_curves=(),
+            right_bank_curves=(),
+            elevations=(100.0,),
         )
 
 
