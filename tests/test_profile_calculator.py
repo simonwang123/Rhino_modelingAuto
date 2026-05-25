@@ -362,8 +362,8 @@ def test_apdl_preparation_options_default_to_stage_only_meter_model() -> None:
 
     assert options.include_global_geometry is False
     assert options.target_unit_system == "Meters"
-    assert options.min_edge_length == pytest.approx(1.0)
-    assert options.min_face_area == pytest.approx(1.0)
+    assert options.min_edge_length == pytest.approx(0.5)
+    assert options.min_face_area == pytest.approx(0.5)
     assert options.shrink_trimmed_faces is True
     assert options.merge_coplanar_faces is True
     assert options.fail_on_remaining_small_features is True

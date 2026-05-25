@@ -4,6 +4,11 @@ from pathlib import Path
 from typing import Any
 
 from export.base_exporter import BaseExporter
+from export.apdl_mesh_package import (
+    ApdlMeshPackageManifest,
+    ApdlMeshPackageOptions,
+    export_apdl_mesh_package_from_rhino,
+)
 from geometry import ApdlPreparationOptions, DamGeometryBuilder
 from models import DamParameters
 
@@ -26,6 +31,16 @@ class APDLExporter(BaseExporter):
                 "APDLExporter.export expects DamParameters or DamGeometryBuilder."
             )
         return builder.export_apdl_stage_3dm(output_path, self.options)
+
+    def export_mesh_package_from_rhino(
+        self,
+        output_dir: str | Path,
+        input_3dm: str | Path | None = None,
+        options: ApdlMeshPackageOptions | None = None,
+    ) -> ApdlMeshPackageManifest:
+        """Export named Rhino stage solids to SAT files plus an APDL mesh macro."""
+
+        return export_apdl_mesh_package_from_rhino(output_dir, input_3dm, options)
 
 
 def export_apdl_stage_3dm(

@@ -14,8 +14,8 @@ class ApdlPreparationOptions:
 
     include_global_geometry: bool = False
     target_unit_system: str = "Meters"
-    min_edge_length: float = 1.0
-    min_face_area: float = 1.0
+    min_edge_length: float = 0.5
+    min_face_area: float = 0.5
     shrink_trimmed_faces: bool = True
     merge_coplanar_faces: bool = True
     fail_on_remaining_small_features: bool = True
