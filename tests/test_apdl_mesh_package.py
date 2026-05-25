@@ -75,7 +75,7 @@ def test_render_apdl_macro_imports_glues_assigns_and_meshes_new_elements() -> No
 
     assert "ET,1,SOLID185" in macro
     assert "MSHKEY,0" in macro
-    assert "~SATIN,'stage_01_100_110__primary_rockfill','sat','solids',ALL,1" in macro
+    assert "~SATIN,'stage_01_100_110__primary_rockfill','sat','solids',ALL,0" in macro
     assert "CM,V_S01_Z100_Z110_PR,VOLU" in macro
     assert "VATT,1,,1" in macro
     assert "VGLUE,ALL" in macro

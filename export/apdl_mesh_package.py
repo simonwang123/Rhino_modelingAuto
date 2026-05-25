@@ -393,7 +393,7 @@ def _render_satin_command(sat_path: str) -> str:
     directory = _apdl_path(path.parent)
     if directory == ".":
         directory = ""
-    return f"~SATIN,'{stem}','{extension}','{directory}',ALL,1"
+    return f"~SATIN,'{stem}','{extension}','{directory}',ALL,0"
 
 
 def _safe_file_stem(name: str) -> str:
